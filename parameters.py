@@ -53,8 +53,8 @@ ROTATING_MASS_FACTOR: float = 0.08  # m_rot = ROTATING_MASS_FACTOR * m  [-]
 # Wartości referencyjne dla KDP (ICE 3 / Velaro, Rochard & Schmid 2000)
 # UWAGA: w naszym modelu A,B,C są stałe dla wszystkich klas masy
 # (uproszczenie omówione w rozdz. 5.3, przypis 1)
-DAVIS_A: float = 2100.0  # [N]      — opór toczny + łożyskowy
-DAVIS_B: float = 28.0  # [N·s/m]  — opór mechaniczny zależny od v
+DAVIS_A: float = 2200.0  # [N]      — opór toczny + łożyskowy
+DAVIS_B: float = 130.0  # [N·s/m]  — opór mechaniczny zależny od v
 DAVIS_C: float = 6.45  # [N·s²/m²] — opór aerodynamiczny
 
 # --- Sprawności (rozdz. 3.5, 3.6) ---
