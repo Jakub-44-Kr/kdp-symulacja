@@ -22,11 +22,35 @@ from dataclasses import dataclass
 import numpy as np
 
 from parameters import Parameters
-from physics import split_brake_force
 from simulation import SimulationProfile
 
 # Stała konwersji J → kWh
 J_TO_KWH: float = 1.0 / 3.6e6
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  POMOCNICZE — wektorowa charakterystyka hamowania elektrycznego
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _F_brake_max_electric_vec(v: np.ndarray, p: Parameters) -> np.ndarray:
+    """
+    Wektorowa wersja physics.F_brake_max_electric.
+
+    Dla każdego v w tablicy:
+      - v < v_brake_min       → 0 (poniżej progu, tylko mechaniczny)
+      - v_brake_min ≤ v < v_b → F_max (region stałej siły)
+      - v ≥ v_breakpoint      → P_eff_max / v (region stałej mocy)
+    """
+    F = np.zeros_like(v)
+    # Region stałej siły (między progiem a prędkością łamania)
+    mask_const = (v >= p.v_brake_min) & (v < p.v_breakpoint)
+    F[mask_const] = p.F_max
+    # Region stałej mocy (powyżej prędkości łamania)
+    mask_power = v >= p.v_breakpoint
+    # zabezpieczenie przed dzieleniem przez 0 (v >= v_breakpoint > 0 zawsze)
+    F[mask_power] = p.P_eff_max / v[mask_power]
+    return F
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -136,43 +160,47 @@ def compute_energy(sim: SimulationProfile, p: Parameters) -> EnergyResults:
         EnergyResults zawierający tablice i całkowite energie.
     """
     N = len(sim.x)
+    v = sim.v
+    phase = sim.phase
 
-    # ─── Momentalne moce i prądy ──────────────────────────────────────────
+    # Maski faz (boolowskie tablice) - zastępują if w pętli
+    mask_traction = (phase == 1) | (phase == 2)  # rozpędzanie + jazda ustalona
+    mask_coast = phase == 3  # wybieg
+    mask_brake = phase == 4  # hamowanie
+
+    # ─── Momentalne moce i prądy (wektorowo) ─────────────────────────────
     P_kolo = np.zeros(N, dtype=np.float64)
     P_pant_draw = np.zeros(N, dtype=np.float64)
     P_pant_rec = np.zeros(N, dtype=np.float64)
     F_brake_el = np.zeros(N, dtype=np.float64)
     F_brake_mech = np.zeros(N, dtype=np.float64)
 
-    for i in range(N):
-        v = sim.v[i]
-        phase = sim.phase[i]
+    # --- Fazy trakcyjne (1, 2) ---
+    P_kolo[mask_traction] = sim.F_tr[mask_traction] * v[mask_traction]
+    P_pant_draw[mask_traction] = P_kolo[mask_traction] / p.eta_tr + p.P_aux
 
-        # Moc trakcyjna (faza 1+2)
-        if phase in (1, 2):
-            P_kolo[i] = sim.F_tr[i] * v
-            P_pant_draw[i] = P_kolo[i] / p.eta_tr + p.P_aux
+    # --- Coasting (3) - tylko potrzeby własne ---
+    P_pant_draw[mask_coast] = p.P_aux
 
-        # Coasting (faza 3) - tylko potrzeby własne na pantografie
-        elif phase == 3:
-            P_pant_draw[i] = p.P_aux
-            P_kolo[i] = 0.0
+    # --- Hamowanie (4) - rozdział siły hamulcowej elektryczny/mechaniczny ---
+    # Wektorowy odpowiednik split_brake_force: F_el = min(F_brake, F_el_max)
+    F_el_max = _F_brake_max_electric_vec(v, p)  # max siła el. dla każdego v
+    F_brake_el_full = np.minimum(
+        sim.F_brake, F_el_max
+    )  # elektryczna = min(wymagana, max)
+    F_brake_mech_full = sim.F_brake - F_brake_el_full  # reszta mechanicznie
 
-        # Hamowanie (faza 4) - moc generowana przez napęd w trybie generatorowym
-        elif phase == 4:
-            F_brake_total = sim.F_brake[i]
-            F_el, F_mech = split_brake_force(F_brake_total, v, p)
-            F_brake_el[i] = F_el
-            F_brake_mech[i] = F_mech
+    F_brake_el[mask_brake] = F_brake_el_full[mask_brake]
+    F_brake_mech[mask_brake] = F_brake_mech_full[mask_brake]
 
-            # Moc generowana na kole (znak ujemny = produkcja, nie pobór)
-            P_kolo[i] = -F_el * v
-
-            # Moc zwrócona do sieci: na kole → przez η_rec → przez η_grid
-            P_pant_rec[i] = F_el * v * p.eta_rec * p.eta_grid
-
-            # W trakcie hamowania nadal pobieramy potrzeby własne
-            P_pant_draw[i] = p.P_aux
+    # Moc na kole w hamowaniu (ujemna = produkcja)
+    P_kolo[mask_brake] = -F_brake_el[mask_brake] * v[mask_brake]
+    # Moc zwrócona do sieci (przez η_rec i η_grid)
+    P_pant_rec[mask_brake] = (
+        F_brake_el[mask_brake] * v[mask_brake] * p.eta_rec * p.eta_grid
+    )
+    # Potrzeby własne nadal pobierane w hamowaniu
+    P_pant_draw[mask_brake] = p.P_aux
 
     # Moc netto na pantografie
     P_pant_net = P_pant_draw - P_pant_rec

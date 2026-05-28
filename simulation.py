@@ -25,13 +25,58 @@ from physics import (
     F_davis,
     F_gravity,
     F_resultant_in_phase,
-    F_traction,
     TrackProfile,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  KONTENERY DANYCH
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+# Stała przyspieszenia ziemskiego (lokalna kopia dla wektoryzacji)
+G_CONST: float = 9.81
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  WEKTOROWE WERSJE FUNKCJI FIZYCZNYCH (post-processing)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _F_traction_vec(v: np.ndarray, p: Parameters) -> np.ndarray:
+    """Wektorowa F_traction: F_max do v_b, potem P/v."""
+    F = np.full_like(v, p.F_max)
+    mask_power = v > p.v_breakpoint
+    F[mask_power] = p.P_eff_max / v[mask_power]
+    return F
+
+
+def _gradient_profile_vec(x: np.ndarray, profile: TrackProfile) -> np.ndarray:
+    """
+    Wektorowy odczyt pochylenia [‰] dla każdego punktu x.
+
+    Dla każdego segmentu (x_start, x_end, i) ustawia i tam gdzie x w zakresie.
+    Tolerancja na końcach dla zaokrągleń float.
+    """
+    grad = np.zeros_like(x)
+    TOL = 1.0
+    for x_start, x_end, i_promille in profile:
+        mask = (x >= x_start - TOL) & (x <= x_end + TOL)
+        grad[mask] = i_promille
+    return grad
+
+
+def _F_brake_required_vec(
+    v: np.ndarray, gradient_local: np.ndarray, p: Parameters
+) -> np.ndarray:
+    """
+    Wektorowa F_brake_required dla zadanego opóźnienia a_brake_max.
+
+    F_req = m_eff·a_decel - F_op(v) - F_grav  (≥ 0)
+    """
+    F_op = p.davis_A + p.davis_B * v + p.davis_C * v * v
+    F_grav = p.m * G_CONST * gradient_local / 1000.0
+    F_req = p.m_eff * p.a_brake_max - F_op - F_grav
+    return np.maximum(0.0, F_req)
 
 
 @dataclass
@@ -324,42 +369,46 @@ def run_simulation(
     phase = phase_fwd.copy()
     phase[idx_brake_start:] = 4
 
-    # 4. Czas przez całkowanie dt = dx/v (trapezoidalne dla stabilności przy v≈0)
+    # 4. Czas przez całkowanie dt = dx/v (wektorowo, trapezoidalnie)
+    v_avg_seg = 0.5 * (v[:-1] + v[1:])  # średnia prędkość na segmencie
+    v_avg_seg = np.maximum(v_avg_seg, p.v_min_num)  # zabezpieczenie przed v≈0
+    dt_seg = p.dx / v_avg_seg  # czas na każdym segmencie
     t = np.zeros(N, dtype=np.float64)
-    for i in range(1, N):
-        v_avg_segment = 0.5 * (v[i - 1] + v[i])
-        if v_avg_segment < p.v_min_num:
-            v_avg_segment = p.v_min_num  # zabezpieczenie
-        t[i] = t[i - 1] + p.dx / v_avg_segment
+    t[1:] = np.cumsum(dt_seg)  # akumulacja czasu
 
-    # 5. Przyspieszenie z różnic skończonych: a = v·dv/dx
+    # 5. Przyspieszenie z różnic skończonych: a = v·dv/dx (wektorowo)
     a = np.zeros(N, dtype=np.float64)
-    for i in range(N - 1):
-        if v[i] > p.v_min_num:
-            a[i] = v[i] * (v[i + 1] - v[i]) / p.dx
+    dv = np.diff(v)  # v[i+1] - v[i], długość N-1
+    mask_v = v[:-1] > p.v_min_num
+    a[:-1] = np.where(mask_v, v[:-1] * dv / p.dx, 0.0)
     a[-1] = 0.0
 
-    # 6. Siły dla każdego punktu
+    # 6. Siły dla każdego punktu (wektorowo)
+    # Opory Davisa: A + B·v + C·v²
+    F_op = p.davis_A + p.davis_B * v + p.davis_C * v * v
+
+    # Składowa grawitacyjna: dla każdego x odczytujemy pochylenie z profilu
+    gradient_local = _gradient_profile_vec(x, profile)  # ‰ dla każdego x
+    F_grav = p.m * G_CONST * gradient_local / 1000.0
+    gradient_arr = gradient_local.copy()
+
+    # Siła trakcyjna wg faz
     F_tr = np.zeros(N, dtype=np.float64)
     F_brake_total = np.zeros(N, dtype=np.float64)
-    F_op = np.zeros(N, dtype=np.float64)
-    F_grav = np.zeros(N, dtype=np.float64)
-    gradient_arr = np.zeros(N, dtype=np.float64)
 
-    for i in range(N):
-        F_op[i] = F_davis(v[i], p)
-        F_grav[i] = F_gravity(x[i], p, profile)
-        gradient_arr[i] = F_grav[i] / (p.m * 9.81) * 1000  # back-calc gradient w ‰
+    # Faza 1 (rozpędzanie): F_traction(v) - dwuczęściowa charakterystyka
+    mask1 = phase == 1
+    F_tr[mask1] = _F_traction_vec(v[mask1], p)
 
-        if phase[i] == 1:
-            F_tr[i] = F_traction(v[i], p)
-        elif phase[i] == 2:
-            F_tr[i] = F_op[i] + F_grav[i]
-            F_tr[i] = max(0.0, F_tr[i])  # napęd nie może być ujemny
-        elif phase[i] == 3:
-            F_tr[i] = 0.0
-        elif phase[i] == 4:
-            F_brake_total[i] = F_brake_required(v[i], x[i], p, profile)
+    # Faza 2 (jazda ustalona): napęd kompensuje opory + grawitację (≥0)
+    mask2 = phase == 2
+    F_tr[mask2] = np.maximum(0.0, F_op[mask2] + F_grav[mask2])
+
+    # Faza 3 (coasting): F_tr = 0 (już zainicjalizowane zerami)
+
+    # Faza 4 (hamowanie): wymagana siła hamulcowa
+    mask4 = phase == 4
+    F_brake_total[mask4] = _F_brake_required_vec(v[mask4], gradient_local[mask4], p)
 
     # Punkty przełączania
     x1 = float(x[np.where(phase >= 2)[0][0]]) if np.any(phase >= 2) else 0.0
