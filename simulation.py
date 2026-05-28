@@ -19,9 +19,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from engine_fast import backward_pass_njit, forward_pass_njit
 from parameters import Parameters
 from physics import (
-    F_brake_required,
     F_davis,
     F_gravity,
     F_resultant_in_phase,
@@ -35,6 +35,16 @@ from physics import (
 
 # Stała przyspieszenia ziemskiego (lokalna kopia dla wektoryzacji)
 G_CONST: float = 9.81
+
+
+def _profile_to_arrays(
+    profile: TrackProfile,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Rozbija profil [(start, end, grad), ...] na trzy tablice numpy dla Numby."""
+    starts = np.array([seg[0] for seg in profile], dtype=np.float64)
+    ends = np.array([seg[1] for seg in profile], dtype=np.float64)
+    grads = np.array([seg[2] for seg in profile], dtype=np.float64)
+    return starts, ends, grads
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -230,64 +240,55 @@ def forward_pass(
 # ═══════════════════════════════════════════════════════════════════════════
 #  BACKWARD PASS — hamowanie wstecz od x=L
 # ═══════════════════════════════════════════════════════════════════════════
+def forward_pass(
+    p: Parameters, profile: TrackProfile
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Forward pass (rozpędzanie → jazda ustalona → coasting).
+
+    Cienka nakładka na skompilowaną Numbą forward_pass_njit:
+    rozpakowuje Parameters na floaty i profil na tablice.
+    """
+    starts, ends, grads = _profile_to_arrays(profile)
+    return forward_pass_njit(
+        p.L,
+        p.dx,
+        p.v_max,
+        p.m_eff,
+        p.F_max,
+        p.P_eff_max,
+        p.v_breakpoint,
+        p.davis_A,
+        p.davis_B,
+        p.davis_C,
+        p.dx_coast,
+        p.m,
+        starts,
+        ends,
+        grads,
+    )
 
 
 def backward_pass(p: Parameters, profile: TrackProfile) -> np.ndarray:
     """
-    Całkowanie ruchu wstecz od końca trasy.
+    Backward pass (hamowanie wstecz od x=L).
 
-    Symulujemy hamowanie z opóźnieniem a_brake_max, zaczynając od v=0 w x=L.
-    Idziemy w stronę x=0 i w każdym kroku obliczamy jaką prędkość musiał
-    mieć pociąg żeby zatrzymać się w x=L.
-
-    Równanie wsteczne (z m_eff · v · dv/dx = -F_brake - F_op - F_grav):
-        v²_{i-1} = v²_i + 2 · (F_brake + F_op - F_grav_wsteczne) / m_eff · Δx
-
-    UWAGA - znak F_grav: gdy idziemy WSTECZ, składowa grawitacyjna działa
-    odwrotnie do kierunku ruchu numerycznego, więc znak ZMIENIAMY:
-    wzniesienie (i>0) wspomaga hamowanie idąc do przodu = utrudnia "rozpędzanie wstecz"
-    co matematycznie oznacza że v_{i-1} jest mniejsze.
-
-    Args:
-        p: Parametry symulacji.
-        profile: Profil trasy.
-
-    Returns:
-        Tablica v_bwd o tej samej długości co forward pass (indeksowana od x=0).
-        v_bwd[N-1] = 0 (start hamowania od końca), v_bwd[0] = teoretyczna v
-        z której można by zacząć hamować już na początku trasy (zazwyczaj b.duża).
+    Cienka nakładka na skompilowaną Numbą backward_pass_njit.
     """
-    N = int(math.ceil(p.L / p.dx)) + 1
-    x = np.arange(N, dtype=np.float64) * p.dx
-    v_bwd = np.zeros(N, dtype=np.float64)
-
-    # Start: v=0 w x=L (ostatni indeks)
-    v_bwd[N - 1] = 0.0
-
-    for i in range(N - 1, 0, -1):
-        v_current = v_bwd[i]
-
-        # Wymagana siła hamulcowa dla zadanego opóźnienia
-        F_brake = F_brake_required(v_current, x[i], p, profile, p.a_brake_max)
-        F_op = F_davis(v_current, p)
-        F_g = F_gravity(x[i], p, profile)
-
-        # Idąc wstecz, składowa grawitacyjna wspomaga lub przeszkadza hamowaniu
-        # ze znakiem PRZECIWNYM niż w forward pass:
-        # - wzniesienie (F_g > 0): wspomaga hamowanie = mniejsza v poprzednia
-        # - spadek (F_g < 0): przeszkadza hamowaniu = większa v poprzednia
-        # Sumarycznie: w wstecz, F_net_decel = F_brake + F_op + F_g
-        F_net_decel = F_brake + F_op + F_g
-
-        # Krok wsteczny: v²_{i-1} = v²_i + 2·F_net_decel/m_eff·dx
-        v_squared_prev = v_current**2 + 2.0 * F_net_decel / p.m_eff * p.dx
-
-        if v_squared_prev <= 0:
-            v_bwd[i - 1] = 0.0
-        else:
-            v_bwd[i - 1] = math.sqrt(v_squared_prev)
-
-    return v_bwd
+    starts, ends, grads = _profile_to_arrays(profile)
+    return backward_pass_njit(
+        p.L,
+        p.dx,
+        p.m_eff,
+        p.a_brake_max,
+        p.davis_A,
+        p.davis_B,
+        p.davis_C,
+        p.m,
+        starts,
+        ends,
+        grads,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
