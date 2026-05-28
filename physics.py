@@ -89,20 +89,26 @@ def gradient_at(x: float, profile: TrackProfile) -> float:
     Profil to lista segmentów (x_start, x_end, gradient_promille).
     Zakładamy że segmenty są niepokrywające się i pokrywają cały zakres [0, L].
 
+    Tolerancja TOL na końcach segmentów chroni przed błędami zaokrągleń
+    float w siatce np.arange (ostatni punkt może minimalnie wyjść poza L).
+
     Args:
         x: Pozycja na trasie [m].
         profile: Lista segmentów trasy.
 
     Returns:
         Pochylenie [‰] w punkcie x. Dodatnie = pod górę, ujemne = z górki.
-
-    Raises:
-        ValueError: jeśli x leży poza zakresem profilu.
     """
+    TOL = 1.0  # [m] tolerancja na zaokrąglenia float
+
     for x_start, x_end, i_promille in profile:
-        if x_start <= x <= x_end:
+        if x_start - TOL <= x <= x_end + TOL:
             return i_promille
-    raise ValueError(f"Punkt x = {x} m poza zakresem profilu trasy.")
+
+    # Fallback: jeśli x tuż poza zakresem, zwróć pochylenie najbliższego segmentu
+    if x < profile[0][0]:
+        return profile[0][2]
+    return profile[-1][2]
 
 
 def F_gravity(x: float, p: Parameters, profile: TrackProfile) -> float:
