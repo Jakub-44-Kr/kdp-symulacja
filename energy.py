@@ -177,7 +177,7 @@ def compute_energy(sim: SimulationProfile, p: Parameters) -> EnergyResults:
 
     # --- Fazy trakcyjne (1, 2) ---
     P_kolo[mask_traction] = sim.F_tr[mask_traction] * v[mask_traction]
-    P_pant_draw[mask_traction] = P_kolo[mask_traction] / p.eta_tr + p.P_aux
+    P_pant_draw[mask_traction] = P_kolo[mask_traction] / p.eta_tr_effective + p.P_aux
 
     # --- Coasting (3) - tylko potrzeby własne ---
     P_pant_draw[mask_coast] = p.P_aux

@@ -32,7 +32,7 @@ LENGTH_KM: float = 180.0  # Długość odcinka [km] — baza 180 (Wrocław-Pozna
 
 # --- System zasilania ---
 # "AC" = 2x25 kV AC | "DC" = 3 kV DC
-POWER_SYSTEM: str = "AC"
+POWER_SYSTEM: str = "DC"
 
 # --- Parametry sterownicze (stałe w OAT, mogą stać się zmiennymi) ---
 COASTING_DISTANCE_KM: float = (
@@ -58,9 +58,13 @@ DAVIS_B: float = 130.0  # [N·s/m]  — opór mechaniczny zależny od v
 DAVIS_C: float = 6.45  # [N·s²/m²] — opór aerodynamiczny
 
 # --- Sprawności (rozdz. 3.5, 3.6) ---
-ETA_TR: float = (
-    0.88  # Tor przekazywania mocy (transformator + przekształtniki + silnik)
-)
+# η_tr różnicowane między systemami zasilania:
+# - AC 2×25 kV: 0.88 - niskie prądy (~400 A), małe straty I²R w sieci trakcyjnej
+# - DC 3 kV: 0.83 - wysokie prądy (~4000 A), znaczące straty I²R (10× wyższe niż AC)
+# Wartości zgodne z literaturą (Steimel 2008, Lukaszewicz 2009, RailEnergy).
+ETA_TR_AC: float = 0.88       # Tor przekazywania mocy dla AC
+ETA_TR_DC: float = 0.83       # Tor przekazywania mocy dla DC
+ETA_TR: float = 0.88          # Domyślne (zachowane dla kompatybilności, używane dla AC)
 ETA_REC: float = (
     0.85  # Tor rekuperacji (silnik w trybie generatorowym + przekształtniki)
 )
@@ -195,6 +199,16 @@ class Parameters:
         return I_MAX_DC if self.power_system == "DC" else I_MAX_AC
 
     @property
+    def eta_tr_effective(self) -> float:
+        """
+        Efektywna sprawność toru przekazywania mocy zależnie od systemu zasilania.
+
+        DC ma niższą sprawność z powodu znacznie wyższych prądów (4 kA vs 400 A)
+        i wynikających z tego strat I²R w sieci trakcyjnej (Steimel 2008).
+        """
+        return ETA_TR_DC if self.power_system == "DC" else ETA_TR_AC
+
+    @property
     def F_max(self) -> float:
         """
         Maksymalna siła trakcyjna [N] - mniejsza z dwóch:
@@ -255,7 +269,7 @@ class Parameters:
             f"  Δx_coast       = {self.dx_coast / 1000:.1f} km\n"
             f"  F_max          = {self.F_max / 1000:.1f} kN\n"
             f"  v_breakpoint   = {self.v_breakpoint * 3.6:.1f} km/h\n"
-            f"  η_tr           = {self.eta_tr:.2f}\n"
+            f"  η_tr (effective) = {self.eta_tr_effective:.2f} (system {self.power_system})\n"
             f"  η_rec          = {self.eta_rec:.2f}\n"
             f"  η_grid         = {self.eta_grid:.2f}\n"
             f"  P_aux          = {self.P_aux / 1000:.0f} kW\n"

@@ -82,7 +82,9 @@ def check_acceleration_limits(sim: SimulationProfile, p: Parameters) -> Validati
 
 def check_power_limit(energy: EnergyResults, p: Parameters) -> ValidationCheck:
     """Sprawdza czy P_pant_max nie przekracza P_eff_max + aux (z tolerancją 5%)."""
-    P_expected_max = p.P_eff_max / p.eta_tr + p.P_aux  # max moc na pantografie z η_tr
+    P_expected_max = (
+        p.P_eff_max / p.eta_tr_effective + p.P_aux
+    )  # uwzględnia różne η dla AC/DC
     passed = energy.P_pant_max <= P_expected_max * 1.05
     return ValidationCheck(
         name="Limit mocy na pantografie",
