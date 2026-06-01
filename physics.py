@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from parameters import G, Parameters
+from parameters import MU_B_BASE, G, Parameters
 
 # ───────────────────────────────────────────────────────────────────────────
 #  Typowanie profilu trasy
@@ -138,6 +138,27 @@ def F_gravity(x: float, p: Parameters, profile: TrackProfile) -> float:
 # ═══════════════════════════════════════════════════════════════════════════
 #  HAMOWANIE — model mieszany (rozdz. 4.2)
 # ═══════════════════════════════════════════════════════════════════════════
+def mu_b(v_kmh: float, mu_base: float = MU_B_BASE) -> float:
+    """
+    Graniczne wykorzystanie przyczepności przy hamowaniu wg TSI 4.2.4.6.1 [-].
+
+    Stałe do 250 km/h, spadek liniowy o 0,05 do 350 km/h, zamrożone powyżej
+    (powyżej 350 km/h poza formalnym zakresem TSI — wartość ostrożna).
+    """
+    if v_kmh <= 250.0:
+        return mu_base
+    v = min(v_kmh, 350.0)
+    return mu_base - 0.05 * (v - 250.0) / 100.0
+
+
+def a_ham(v: float, p: Parameters) -> float:
+    """
+    Opóźnienie hamowania = sufit przyczepności TSI (jazda po suficie) [m/s²].
+
+    a_ham(v) = μ_b(v) · (m_ham/m) · g, przyjmuje v w [m/s].
+    Zastępuje stałe a_brake_max w przebiegu hamowania (rozdz. 4.2).
+    """
+    return mu_b(v * 3.6, p.mu_b_base) * p.braked_frac * G
 
 
 def F_brake_max_electric(v: float, p: Parameters) -> float:
@@ -198,7 +219,7 @@ def F_brake_required(
         Może być 0 jeśli opory + grawitacja same wystarczą do osiągnięcia opóźnienia.
     """
     if target_decel is None:
-        target_decel = p.a_brake_max
+        target_decel = a_ham(v, p)  # sufit przyczepności TSI 4.2.4.6.1
 
     F_op = F_davis(v, p)
     F_g = F_gravity(x, p, profile)  # + dla wzniesienia, - dla spadku

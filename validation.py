@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from energy import J_TO_KWH, EnergyResults
-from parameters import Parameters
+from parameters import G, Parameters
 from simulation import SimulationProfile
 
 
@@ -68,14 +68,16 @@ def check_acceleration_limits(sim: SimulationProfile, p: Parameters) -> Validati
     a_p99 = float(np.percentile(a_clean, 99))
     a_p01 = float(np.percentile(a_clean, 1))
     a_max_abs = float(np.max(np.abs(a_clean)))
-    # Tolerancja 5% komfortu
-    passed = a_p99 <= p.a_launch_max * 1.05 and abs(a_p01) <= p.a_brake_max * 1.05
+    # Granica opóźnienia = sufit przyczepności TSI 4.2.4.6.1: a_ham,max = μ_b·g
+    # (przy v≤250 km/h, μ_b=0,15 → ≈1,47 m/s²; powyżej maleje). Komfort: ±5%.
+    a_brake_limit = p.mu_b_base * p.braked_frac * G
+    passed = a_p99 <= p.a_launch_max * 1.05 and abs(a_p01) <= a_brake_limit * 1.05
     return ValidationCheck(
         name="Limity przyspieszenia/opóźnienia (99-percentyl)",
         passed=passed,
         value=f"a_p99 = {a_p99:.3f}, a_p01 = {a_p01:.3f} m/s² "
         f"(max bezwzględnie: {a_max_abs:.3f})",
-        expected=f"≤ {p.a_launch_max}, ≥ -{p.a_brake_max} m/s² (99%, ±5%)",
+        expected=f"≤ {p.a_launch_max}, ≥ -{a_brake_limit:.2f} m/s² (sufit TSI, 99%, ±5%)",
         severity="WARNING" if not passed else "INFO",
     )
 

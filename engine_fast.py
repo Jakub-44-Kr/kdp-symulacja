@@ -38,6 +38,23 @@ def gradient_at_njit(x, starts, ends, grads):
 
 
 @njit(cache=True, fastmath=True)
+def a_ham_njit(v_ms, mu_b_base, braked_frac):
+    """
+    Opóźnienie hamowania = sufit przyczepności wg TSI 4.2.4.6.1 [m/s²].
+
+    μ_b(v): stałe do 250 km/h, spadek liniowy o 0,05 do 350 km/h, zamrożone
+    powyżej. a_ham(v) = μ_b(v)·braked_frac·g — jazda po suficie przyczepności.
+    """
+    v_kmh = v_ms * 3.6
+    if v_kmh <= 250.0:
+        mu = mu_b_base
+    else:
+        vv = v_kmh if v_kmh < 350.0 else 350.0
+        mu = mu_b_base - 0.05 * (vv - 250.0) / 100.0
+    return mu * braked_frac * G_CONST
+
+
+@njit(cache=True, fastmath=True)
 def forward_pass_njit(
     L,
     dx,
@@ -142,7 +159,8 @@ def backward_pass_njit(
     L,
     dx,
     m_eff,
-    a_brake_max,
+    mu_b_base,
+    braked_frac,
     davis_A,
     davis_B,
     davis_C,
@@ -164,12 +182,15 @@ def backward_pass_njit(
     for i in range(N - 1, 0, -1):
         v_current = v_bwd[i]
 
-        # F_brake_required dla a_brake_max
+        # Opóźnienie wg sufitu przyczepności TSI 4.2.4.6.1 (zależne od v)
+        a_dec = a_ham_njit(v_current, mu_b_base, braked_frac)
+
+        # F_brake_required dla a_dec(v)
         F_op = davis_A + davis_B * v_current + davis_C * v_current * v_current
         i_prom = gradient_at_njit(x[i], starts, ends, grads)
         F_g = m * G_CONST * i_prom / 1000.0
 
-        F_brake = m_eff * a_brake_max - F_op - F_g
+        F_brake = m_eff * a_dec - F_op - F_g
         if F_brake < 0.0:
             F_brake = 0.0
 
