@@ -6,7 +6,7 @@ i numeryczne modelu. Pozostałe moduły importują parametry stąd.
 
 Konwencja jednostek: WSZYSTKO w SI (kg, m, s, N, W, V, A).
 Pochylenie wewnętrznie przechowywane jest w promilach [‰] - konwersja
-na sin(α) wykonywana jest w physics.py wg wzoru (24).
+na sin(theta) wykonywana jest w physics.py wg wzoru (24).
 
 Odwołania do wzorów odnoszą się do pracy magisterskiej.
 
@@ -26,7 +26,9 @@ from pathlib import Path
 # --- Parametry ruchu i taboru (objęte analizą wrażliwości OAT) ---
 V_MAX_KMH: float = 320.0  # Prędkość eksploatacyjna [km/h] — baza 320, OAT 250-400
 MASS_TON: float = 600.0  # Masa składu [t] — baza 600, OAT 450/600/750
-POWER_MW: float = 9.0  # Moc znamionowa [MW] — baza 9, OAT 6/9/12
+POWER_MW: float = (
+    12.0  # Moc znamionowa [MW] — baza 12 (AC→12 / DC→6 wg sufitu), OAT 6/9/12
+)
 GRADIENT_PROMILE: float = 0.0  # Pochylenie trasy [‰] — baza 0, OAT 0-5
 LENGTH_KM: float = 180.0  # Długość odcinka [km] — baza 180 (Wrocław-Poznań)
 
@@ -62,9 +64,9 @@ DAVIS_C: float = 6.45  # [N·s²/m²] — opór aerodynamiczny
 # - AC 2×25 kV: 0.88 - niskie prądy (~400 A), małe straty I²R w sieci trakcyjnej
 # - DC 3 kV: 0.83 - wysokie prądy (~4000 A), znaczące straty I²R (10× wyższe niż AC)
 # Wartości zgodne z literaturą (Steimel 2008, Lukaszewicz 2009, RailEnergy).
-ETA_TR_AC: float = 0.88       # Tor przekazywania mocy dla AC
-ETA_TR_DC: float = 0.83       # Tor przekazywania mocy dla DC
-ETA_TR: float = 0.88          # Domyślne (zachowane dla kompatybilności, używane dla AC)
+ETA_TR_AC: float = 0.88  # Tor przekazywania mocy dla AC
+ETA_TR_DC: float = 0.83  # Tor przekazywania mocy dla DC
+ETA_TR: float = 0.88  # Domyślne (zachowane dla kompatybilności, używane dla AC)
 ETA_REC: float = (
     0.85  # Tor rekuperacji (silnik w trybie generatorowym + przekształtniki)
 )
@@ -93,6 +95,13 @@ A_BRAKE_MAX: float = (
 V_BRAKE_MIN_KMH: float = (
     10.0  # [km/h] — poniżej tej prędkości tylko hamulec mechaniczny
 )
+# --- Hamowanie wg sufitu przyczepności TSI 1302/2014, klauzula 4.2.4.6.1 ---
+# Graniczne wykorzystanie przyczepności przy HAMOWANIU (≠ adhezja sucha 0,30
+# stosowana przy rozruchu/trakcji). Wartość ogólna 0,15 dla v≤250 km/h, spadek
+# liniowy o 0,05 do 350 km/h, zamrożona powyżej (poza zakresem TSI). Opóźnienie
+# liczone jako a_ham(v)=μ_b(v)·g — jazda po suficie przyczepności (rozdz. 4.2).
+MU_B_BASE: float = 0.15  # [-] wymaganie ogólne (każdy zestaw kołowy), v≤250 km/h
+BRAKED_MASS_FRACTION: float = 1.0  # m_ham/m — wszystkie osie hamowane (skład EMU)
 
 # --- Charakterystyka trakcyjna — limity rozruchu ---
 A_LAUNCH_MAX: float = 0.7  # [m/s²] — sztywne ograniczenie a podczas rozpędzania
@@ -157,7 +166,9 @@ class Parameters:
     eta_tr: float = ETA_TR
     eta_rec: float = ETA_REC
     P_aux: float = field(default=P_AUX_KW * 1e3)  # [W]
-    a_brake_max: float = A_BRAKE_MAX
+    a_brake_max: float = A_BRAKE_MAX  # [m/s²] zachowane jako górny bezpiecznik
+    mu_b_base: float = MU_B_BASE  # przyczepność graniczna hamowania (TSI 4.2.4.6.1)
+    braked_frac: float = BRAKED_MASS_FRACTION  # udział masy hamowanej m_ham/m
     v_brake_min: float = field(default=V_BRAKE_MIN_KMH / 3.6)  # [m/s]
     a_launch_max: float = A_LAUNCH_MAX
     rot_mass_factor: float = ROTATING_MASS_FACTOR
@@ -287,6 +298,6 @@ if __name__ == "__main__":
     print(p.summary())
 
     # Demonstracja: kopia z innymi parametrami
-    print("\n=== Kopia: 750 t, system DC ===")
-    p_alt = p.with_changes(m=750_000, power_system="DC")
+    print("\n=== Kopia: 750 t, system AC ===")
+    p_alt = p.with_changes(m=750_000, power_system="AC")
     print(p_alt.summary())

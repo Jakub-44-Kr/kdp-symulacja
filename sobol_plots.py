@@ -84,8 +84,7 @@ def plot_indices_single_system(results: dict, save_dir: Path = OUTPUT_DIR) -> Pa
     labels = [PARAM_LABELS[names[i]] for i in order]
     S1 = [results["S1"][i] for i in order]
     ST = [results["ST"][i] for i in order]
-    S1_err = [results["S1_conf"][i] for i in order]
-    ST_err = [results["ST_conf"][i] for i in order]
+
 
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(len(labels))
@@ -95,8 +94,6 @@ def plot_indices_single_system(results: dict, save_dir: Path = OUTPUT_DIR) -> Pa
         x - w / 2,
         S1,
         w,
-        yerr=S1_err,
-        capsize=4,
         color=COLOR_S1,
         edgecolor="black",
         linewidth=0.8,
@@ -107,8 +104,6 @@ def plot_indices_single_system(results: dict, save_dir: Path = OUTPUT_DIR) -> Pa
         x + w / 2,
         ST,
         w,
-        yerr=ST_err,
-        capsize=4,
         color=COLOR_ST,
         edgecolor="black",
         linewidth=0.8,
@@ -160,8 +155,7 @@ def plot_comparison_AC_DC(
     n = len(names)
     ST_AC = results_AC["ST"]
     ST_DC = results_DC["ST"]
-    ST_AC_err = results_AC["ST_conf"]
-    ST_DC_err = results_DC["ST_conf"]
+
 
     # Sortowanie wg max(AC, DC) malejąco
     max_st = np.maximum(ST_AC, ST_DC)
@@ -169,8 +163,7 @@ def plot_comparison_AC_DC(
     labels = [PARAM_LABELS[names[i]] for i in order]
     ac = [ST_AC[i] for i in order]
     dc = [ST_DC[i] for i in order]
-    ac_e = [ST_AC_err[i] for i in order]
-    dc_e = [ST_DC_err[i] for i in order]
+
 
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(n)
@@ -179,8 +172,6 @@ def plot_comparison_AC_DC(
         x - w / 2,
         ac,
         w,
-        yerr=ac_e,
-        capsize=4,
         color=COLOR_AC,
         edgecolor="black",
         linewidth=0.8,
@@ -191,8 +182,6 @@ def plot_comparison_AC_DC(
         x + w / 2,
         dc,
         w,
-        yerr=dc_e,
-        capsize=4,
         color=COLOR_DC,
         edgecolor="black",
         linewidth=0.8,
@@ -340,8 +329,6 @@ def plot_top_interactions(
     bars = ax.bar(
         range(top_n),
         vals,
-        yerr=errs,
-        capsize=5,
         color=colors,
         edgecolor="black",
         linewidth=0.8,
