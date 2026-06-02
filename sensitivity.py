@@ -51,16 +51,19 @@ def _build_sweep_ranges() -> dict[str, dict]:
             "display": lambda x: x * 3.6,
         },
         "m": {
-            "values": [450_000.0, 600_000.0, 750_000.0],  # 3 wartości
+            "values": [450_000.0 + 50_000.0 * i for i in range(7)],
+            # 450-750 t co 50 t (7 wartości) — zakres = klasy/granice Sobola
             "label": "Masa składu $m$",
             "unit": "t",
             "display": lambda x: x / 1000.0,
         },
         "P_nom": {
-            "values": [6e6, 9e6, 12e6],  # 3 wartości
+            "values": [6e6 + 1e6 * i for i in range(7)],  # 6-12 MW co 1 MW (7)
             "label": "Moc znamionowa $P$",
             "unit": "MW",
             "display": lambda x: x / 1e6,
+            # Dla DC sufit trakcji = 6 MW — wartości > 6 MW pomijane (P_eff stałe).
+            "cap_si": {"DC": 6e6},
         },
         "gradient": {
             "values": [float(i) for i in range(-5, 6)],  # -5 do +5‰, 11 wartości
@@ -77,6 +80,14 @@ def _build_sweep_ranges() -> dict[str, dict]:
             "display": lambda x: x / 1000.0,
         },
     }
+
+
+def _sweep_values(spec: dict, system: str) -> list:
+    """Wartości przemiatu z uwzględnieniem sufitu per system (np. P_nom DC ≤ 6 MW)."""
+    cap = spec.get("cap_si", {}).get(system)
+    if cap is None:
+        return spec["values"]
+    return [v for v in spec["values"] if v <= cap + 1.0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -169,7 +180,7 @@ def run_oat_sweep(
         base_sys = base.with_changes(power_system=system)
 
         for param_name, spec in ranges.items():
-            for value in spec["values"]:
+            for value in _sweep_values(spec, system):
                 # Tworzymy kopię z nadpisanym parametrem
                 p = base_sys.with_changes(**{param_name: value})
 
@@ -223,7 +234,7 @@ def run_oat_sweep_parallel(
     tasks = []
     for system in systems:
         for param_name, spec in ranges.items():
-            for value in spec["values"]:
+            for value in _sweep_values(spec, system):
                 tasks.append(
                     {
                         "system": system,

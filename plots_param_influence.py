@@ -75,16 +75,18 @@ PARAM_SWEEPS = {
         "param_name": "$v_{max}$",
     },
     "m": {
-        "values": [m * 1000 for m in (400, 480, 560, 640, 720, 800)],
+        "values": [m * 1000 for m in (450, 500, 550, 600, 650, 700, 750)],
         "label": "Wpływ masy składu $m$",
         "fmt": lambda v: f"{v / 1000:.0f} t",
         "param_name": "$m$",
     },
     "P_nom": {
-        "values": [P * 1e6 for P in (6, 7.5, 9, 10.5, 12, 13.5)],
+        "values": [P * 1e6 for P in (6, 7, 8, 9, 10, 11, 12)],
         "label": "Wpływ mocy znamionowej $P$",
-        "fmt": lambda v: f"{v / 1e6:.1f} MW",
+        "fmt": lambda v: f"{v / 1e6:.0f} MW",
         "param_name": "$P$",
+        # Dla DC sufit trakcji = 6 MW — zadania DC dla mocy > 6 MW pomijane.
+        "cap_si": {"DC": 6e6},
     },
     "gradient": {
         "values": [-5.0, -3.0, -1.0, 1.0, 3.0, 5.0],
@@ -167,10 +169,16 @@ def _run_all_tasks(tasks: list[dict], n_workers: int | None = None) -> list[dict
 def _format_legend_entry(
     value_SI: float, T_AC: float, T_DC: float, param_name: str
 ) -> str:
-    """Etykieta jednowierszowa: 'v=320 km/h (AC 32 min, DC 35 min)'."""
+    """Etykieta jednowierszowa: 'v=320 km/h (AC 32 min, DC 35 min)'.
+
+    T_AC / T_DC mogą być None (brak danych dla systemu — np. moc DC > 6 MW);
+    wtedy w etykiecie pojawia się '—' zamiast czasu.
+    """
     spec = PARAM_SWEEPS[param_name]
     val_str = spec["fmt"](value_SI)
-    return f"{val_str}  (AC {T_AC / 60:.1f}, DC {T_DC / 60:.1f} min)"
+    ac = f"AC {T_AC / 60:.1f}" if T_AC else "AC —"
+    dc = f"DC {T_DC / 60:.1f}" if T_DC else "DC —"
+    return f"{val_str}  ({ac}, {dc} min)"
 
 
 def plot_param_influence(
@@ -207,11 +215,13 @@ def plot_param_influence(
         # Słownik: (value_SI, system) → wynik
         by_key = {(r["value_SI"], r["system"]): r for r in panel_results}
 
-        # Czasy przejazdu dla legendy
+        # Czasy przejazdu dla legendy (None gdy brak danych, np. DC powyżej sufitu)
         T_by_value = {}
         for v in values:
-            T_AC = by_key.get((v, "AC"), {}).get("T_total_s", 0)
-            T_DC = by_key.get((v, "DC"), {}).get("T_total_s", 0)
+            r_ac = by_key.get((v, "AC"))
+            r_dc = by_key.get((v, "DC"))
+            T_AC = r_ac["T_total_s"] if r_ac is not None else None
+            T_DC = r_dc["T_total_s"] if r_dc is not None else None
             T_by_value[v] = (T_AC, T_DC)
 
         # Najpierw DC (przerywane, na spodzie), potem AC (ciągłe, na wierzchu)
@@ -565,9 +575,13 @@ def run_all_param_influence_plots(
     for param_name, spec in PARAM_SWEEPS.items():
         print(f"\n>>> Podrozdział: {spec['label']}")
         tasks = []
+        cap = spec.get("cap_si", {})
         for value_SI in spec["values"]:
             for L_km in TRACK_LENGTHS_KM:
                 for system in SYSTEMS:
+                    # pomiń wartości powyżej sufitu danego systemu (np. moc DC > 6 MW)
+                    if system in cap and value_SI > cap[system] + 1.0:
+                        continue
                     tasks.append(
                         {
                             "param_name": param_name,
