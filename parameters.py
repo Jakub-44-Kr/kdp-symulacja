@@ -128,6 +128,32 @@ OUTPUT_DIR: Path = PROJECT_ROOT / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
+# ───────────────────────────────────────────────────────────────────────────
+#  🖼️  FORMAT ZAPISU RYSUNKÓW — jeden przełącznik na całą pracę
+# ───────────────────────────────────────────────────────────────────────────
+# "png"  → szybki podgląd podczas pracy (domyślnie)
+# "pdf"  → wektor do finalnej kompilacji LaTeX (XeLaTeX wstawia bez zmian)
+# "svg"  → wektor edytowalny
+# Na ostatnią kompilację wystarczy zmienić tę jedną wartość na "pdf".
+FIG_FORMAT: str = "png"
+
+
+def save_figure(fig, save_dir: Path, name: str, fmt: str | None = None):
+    """
+    Zapis rysunku w formacie wg globalnego FIG_FORMAT (lub nadpisanym `fmt`).
+
+    `name` bez rozszerzenia. Linie z wielką liczbą punktów (profile ~180k)
+    warto wcześniej oznaczyć .set_rasterized(True) — wtedy w PDF/SVG sama
+    linia jest rastrem 300 dpi, a osie/opisy pozostają wektorem.
+    Zwraca Path zapisanego pliku.
+    """
+    ext = (fmt or FIG_FORMAT).lower().lstrip(".")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    path = save_dir / f"{name}.{ext}"
+    fig.savefig(path)
+    return path
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  🎯 KLASA PARAMETRÓW — używana w całym kodzie
 # ═══════════════════════════════════════════════════════════════════════════
