@@ -457,7 +457,7 @@ def analyze_cost_of_stops(save_dir=OUTPUT_DIR):
 
 
 # ───────────────────────────────────────────────────────────────────────────
-#  PEŁNY PRZEMIAT OAT per trasa (schemat jak sensitivity.py + kolumna trasa)
+#  PEŁNY AnalizaOAT per trasa (schemat jak sensitivity.py + kolumna trasa)
 # ───────────────────────────────────────────────────────────────────────────
 # Na trasie L jest ustalone (378 km), a pochylenie jest własnością odcinków,
 # więc przemiatamy tylko parametry niezależne od geometrii trasy.
@@ -496,7 +496,7 @@ def _sweep_values(spec: dict, system: str) -> list:
 
 def run_oat_sweep_per_route(save_dir=OUTPUT_DIR):
     """
-    Pełny przemiat OAT dla 3 tras × 2 systemy. Każdy parametr zmieniany po
+    Pełny AnalizaOAT dla 3 tras × 2 systemy. Każdy parametr zmieniany po
     całym zakresie (pozostałe na wartości bazowej). Zwraca DataFrame ze
     schematem zgodnym z sensitivity_sweep.csv, rozszerzonym o 'trasa'/'postoje'.
     """
@@ -625,7 +625,7 @@ def plot_oat_sweep(df_sweep, save_dir=OUTPUT_DIR):
         title="liczba postojów (kolor) · system (styl)",
     )
     fig.suptitle(
-        "Przemiat OAT jednostkowego zużycia energii — trzy trasy",
+        "AnalizaOAT jednostkowego zużycia energii — trzy trasy",
         y=1.0,
         fontweight="bold",
         fontsize=13,
@@ -752,7 +752,7 @@ def main():
         )
     )
 
-    print("\nWRAŻLIWOŚĆ — pełny przemiat OAT per trasa:")
+    print("\nWRAŻLIWOŚĆ — pełny analiza OAT per trasa:")
     df_sweep = run_oat_sweep_per_route()
     df_sweep.to_csv(OUTPUT_DIR / "trasy_sensitivity_sweep.csv", index=False)
     print(f"  trasy_sensitivity_sweep.csv  ({len(df_sweep)} wierszy)")

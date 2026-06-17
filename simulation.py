@@ -14,7 +14,6 @@ Autor: Jakub Król, PW WE, 2026
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -22,9 +21,6 @@ import numpy as np
 from engine_fast import backward_pass_njit, forward_pass_njit
 from parameters import Parameters
 from physics import (
-    F_davis,
-    F_gravity,
-    F_resultant_in_phase,
     TrackProfile,
 )
 
@@ -53,10 +49,12 @@ def _profile_to_arrays(
 
 
 def _F_traction_vec(v: np.ndarray, p: Parameters) -> np.ndarray:
-    """Wektorowa F_traction: F_max do v_b, potem P/v."""
+    """Wektorowa F_traction: F_max do v_1, P/v do v_2, P·v_2/v² powyżej."""
     F = np.full_like(v, p.F_max)
-    mask_power = v > p.v_breakpoint
+    mask_power = (v > p.v_breakpoint) & (v <= p.v_field_weak)
     F[mask_power] = p.P_eff_max / v[mask_power]
+    mask_fw = v > p.v_field_weak
+    F[mask_fw] = p.P_eff_max * p.v_field_weak / (v[mask_fw] * v[mask_fw])
     return F
 
 
@@ -79,13 +77,21 @@ def _F_brake_required_vec(
     v: np.ndarray, gradient_local: np.ndarray, p: Parameters
 ) -> np.ndarray:
     """
-    Wektorowa F_brake_required dla zadanego opóźnienia a_brake_max.
+    Wektorowa F_brake_required wg sufitu przyczepności TSI 4.2.4.6.1: a_ham(v).
 
-    F_req = m_eff·a_decel - F_op(v) - F_grav  (≥ 0)
+    F_req = m_eff·a_ham(v) - F_op(v) - F_grav  (≥ 0)
     """
     F_op = p.davis_A + p.davis_B * v + p.davis_C * v * v
     F_grav = p.m * G_CONST * gradient_local / 1000.0
-    F_req = p.m_eff * p.a_brake_max - F_op - F_grav
+    # opóźnienie wg sufitu przyczepności TSI 4.2.4.6.1: a_ham(v)=μ_b(v)·g (wektorowo)
+    v_kmh = v * 3.6
+    mu = np.where(
+        v_kmh <= 250.0,
+        p.mu_b_base,
+        p.mu_b_base - 0.05 * (np.minimum(v_kmh, 350.0) - 250.0) / 100.0,
+    )
+    a_dec = mu * p.braked_frac * G_CONST
+    F_req = p.m_eff * a_dec - F_op - F_grav
     return np.maximum(0.0, F_req)
 
 
@@ -154,96 +160,6 @@ def forward_pass(
     p: Parameters, profile: TrackProfile
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Całkowanie ruchu do przodu metodą Eulera w dziedzinie drogi.
-
-    Fazy w forward pass:
-      1) Rozpędzanie: F_tr(v), aż do v_set
-      2) Jazda ustalona: utrzymanie v_set, F_tr = F_op + F_grav
-      3) Coasting: F_tr = 0, pociąg toczy się pod wpływem oporów
-
-    Zatrzymujemy się gdy x ≥ L lub gdy v ≤ v_min_num (zabezpieczenie awaryjne).
-
-    Args:
-        p: Parametry symulacji.
-        profile: Profil trasy.
-
-    Returns:
-        Krotka (x, v, phase) - tablice numpy o tej samej długości.
-    """
-    N = int(math.ceil(p.L / p.dx)) + 1
-    x = np.arange(N, dtype=np.float64) * p.dx
-    v = np.zeros(N, dtype=np.float64)
-    phase = np.zeros(N, dtype=np.int8)
-
-    # Punkt rozpoczęcia coastingu (mierzony od końca trasy)
-    x_start_coast = p.L - p.dx_coast
-
-    # Punkt startu - faza 1 (rozpędzanie)
-    v[0] = 0.0
-    phase[0] = 1
-
-    for i in range(N - 1):
-        # Decyzja o fazie na podstawie stanu (v, x)
-        if x[i] >= x_start_coast:
-            current_phase = 3  # coasting
-        elif v[i] < p.v_max - 0.01:  # tolerancja 1 cm/s
-            current_phase = 1  # rozpędzanie
-        else:
-            current_phase = 2  # jazda ustalona
-
-        phase[i] = current_phase
-
-        # Wypadkowa siła sterująca
-        u = F_resultant_in_phase(current_phase, v[i], x[i], p, profile)
-
-        # Opory i grawitacja (zawsze obecne, niezależnie od fazy)
-        F_op = F_davis(v[i], p)
-        F_g = F_gravity(x[i], p, profile)
-
-        # Wypadkowa netto
-        F_net = u - F_op - F_g
-
-        # Specjalna obsługa fazy 2 (jazda ustalona) - utrzymanie v_set
-        if current_phase == 2:
-            v[i + 1] = p.v_max
-            phase[i + 1] = 2
-            continue
-
-        # Całkowanie Eulera w dziedzinie drogi: v²_{i+1} = v²_i + 2·F_net/m_eff · Δx
-        v_squared_next = v[i] ** 2 + 2.0 * F_net / p.m_eff * p.dx
-
-        # Zabezpieczenie: jeśli wyszłoby v² < 0, zatrzymujemy (awaryjne)
-        if v_squared_next <= 0:
-            v[i + 1] = 0.0
-            # Wypełnij resztę tablicy zerami i kończymy
-            v[i + 1 :] = 0.0
-            phase[i + 1 :] = current_phase
-            break
-
-        v[i + 1] = math.sqrt(v_squared_next)
-
-        # Ograniczenie: w fazie 1 nie przekraczamy v_max
-        if current_phase == 1 and v[i + 1] > p.v_max:
-            v[i + 1] = p.v_max
-
-    # Ostatni indeks (faza wynika z położenia)
-    if x[-1] >= x_start_coast:
-        phase[-1] = 3
-    elif v[-1] >= p.v_max - 0.01:
-        phase[-1] = 2
-    else:
-        phase[-1] = 1
-
-    return x, v, phase
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  BACKWARD PASS — hamowanie wstecz od x=L
-# ═══════════════════════════════════════════════════════════════════════════
-def forward_pass(
-    p: Parameters, profile: TrackProfile
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
     Forward pass (rozpędzanie → jazda ustalona → coasting).
 
     Cienka nakładka na skompilowaną Numbą forward_pass_njit:
@@ -258,6 +174,7 @@ def forward_pass(
         p.F_max,
         p.P_eff_max,
         p.v_breakpoint,
+        p.v_field_weak,
         p.davis_A,
         p.davis_B,
         p.davis_C,
@@ -267,6 +184,11 @@ def forward_pass(
         ends,
         grads,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  BACKWARD PASS — hamowanie wstecz od x=L
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def backward_pass(p: Parameters, profile: TrackProfile) -> np.ndarray:

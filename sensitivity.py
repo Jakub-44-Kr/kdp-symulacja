@@ -9,8 +9,14 @@ Realizuje dwa komplementarne podejścia OAT (One-At-a-Time) z rozdz. 4.6 i 5.3:
   2. ELASTYCZNOŚCI OAT — perturbacja ±10% wokół punktu bazowego,
      wskaźnik S_i^OAT = (ΔE/E₀)/(Δp/p₀) (wzór 4.6), ranking ważności
      + sprawdzenie symetrii (perturbacja + vs -).
+     Funkcją celu jest jednostkowe zużycie energii E_per_km [kWh/km].
 
 Analiza prowadzona osobno dla systemów AC i DC.
+
+UWAGA: sweep OAT (część 1) zapisuje w CSV pełen zestaw metryk, w tym
+E_pant_netto i E_per_km — wybór metryki do wykresu/tabeli następuje na
+etapie post-processingu. Część 2 (elastyczności) liczy wskaźniki wprost
+na E_per_km.
 
 Autor: Jakub Król, PW WE, 2026
 """
@@ -109,6 +115,7 @@ def _run_and_extract(p: Parameters) -> dict:
         "E_pant_pobrana_kWh": energy.E_pant_pobrana / 3.6e6,
         "E_rec_pant_kWh": energy.E_rec_pant / 3.6e6,
         "E_per_km_kWh": energy.E_per_km,
+        "E_per_btkm_Wh": energy.E_per_btkm,
         "E_per_seat_km_Wh": energy.E_per_seat_km,
         "E_jednostkowa": energy.E_jednostkowa,
         "T_min": sim.T_total / 60.0,
@@ -274,9 +281,9 @@ class ElasticityResult:
     S_minus: float  # elastyczność dla perturbacji -10%
     S_avg: float  # średnia (do rankingu)
     asymmetry: float  # |S_plus - S_minus| (miara nieliniowości)
-    E_base: float  # E_pant bazowe [kWh]
-    E_plus: float  # E_pant przy +10%
-    E_minus: float  # E_pant przy -10%
+    E_base: float  # E_per_km bazowe [kWh/km]
+    E_plus: float  # E_per_km przy +10%
+    E_minus: float  # E_per_km przy -10%
 
 
 def _elasticity_for_param(
@@ -287,7 +294,14 @@ def _elasticity_for_param(
     """
     Liczy wskaźnik elastyczności S_i^OAT dla jednego parametru (wzór 4.6):
 
-        S_i^OAT = (ΔE_pant / E_pant,0) / (Δp_i / p_i,0)
+        S_i^OAT = (ΔE_per_km / E_per_km,0) / (Δp_i / p_i,0)
+
+    Funkcją celu jest jednostkowe zużycie energii E_per_km [kWh/km]
+    (energia netto na pantografie / długość odcinka), a nie energia
+    całkowita. Dla parametrów innych niż L długość L jest stała podczas
+    perturbacji, więc ich elastyczność jest identyczna jak dla energii
+    całkowitej; zmienia się jedynie elastyczność względem L, która traci
+    składnik trywialnego, niemal liniowego wzrostu energii z długością.
 
     Perturbacja ±delta wokół wartości bazowej.
 
@@ -299,7 +313,7 @@ def _elasticity_for_param(
     p0 = getattr(base, param_name)
 
     # Bazowy wynik
-    E_base = _run_and_extract(base)["E_pant_netto_kWh"]
+    E_base = _run_and_extract(base)["E_per_km_kWh"]
 
     # Specjalna obsługa pochylenia (baza = 0)
     if param_name == "gradient" and abs(p0) < 1e-9:
@@ -307,12 +321,8 @@ def _elasticity_for_param(
         abs_delta = 0.5
         p_plus = abs_delta
         p_minus = -abs_delta
-        E_plus = _run_and_extract(base.with_changes(gradient=p_plus))[
-            "E_pant_netto_kWh"
-        ]
-        E_minus = _run_and_extract(base.with_changes(gradient=p_minus))[
-            "E_pant_netto_kWh"
-        ]
+        E_plus = _run_and_extract(base.with_changes(gradient=p_plus))["E_per_km_kWh"]
+        E_minus = _run_and_extract(base.with_changes(gradient=p_minus))["E_per_km_kWh"]
         # Pseudo-elastyczność: (ΔE/E) / (Δi w ‰) - normalizowane na 1‰
         S_plus = ((E_plus - E_base) / E_base) / abs_delta
         S_minus = ((E_minus - E_base) / E_base) / (-abs_delta)
@@ -321,10 +331,10 @@ def _elasticity_for_param(
         p_plus = p0 * (1.0 + delta)
         p_minus = p0 * (1.0 - delta)
         E_plus = _run_and_extract(base.with_changes(**{param_name: p_plus}))[
-            "E_pant_netto_kWh"
+            "E_per_km_kWh"
         ]
         E_minus = _run_and_extract(base.with_changes(**{param_name: p_minus}))[
-            "E_pant_netto_kWh"
+            "E_per_km_kWh"
         ]
         S_plus = ((E_plus - E_base) / E_base) / (delta)
         S_minus = ((E_minus - E_base) / E_base) / (-delta)
@@ -355,7 +365,8 @@ def run_oat_elasticity(
 
     Returns:
         DataFrame z kolumnami: parameter, system, S_plus, S_minus, S_avg,
-        asymmetry, E_base, E_plus, E_minus.
+        asymmetry, E_base_per_km, E_plus_per_km, E_minus_per_km.
+        Funkcją celu jest E_per_km [kWh/km].
     """
     if base is None:
         base = Parameters.base()
@@ -375,9 +386,9 @@ def run_oat_elasticity(
                     "S_minus": res.S_minus,
                     "S_avg": res.S_avg,
                     "asymmetry": res.asymmetry,
-                    "E_base_kWh": res.E_base,
-                    "E_plus_kWh": res.E_plus,
-                    "E_minus_kWh": res.E_minus,
+                    "E_base_per_km": res.E_base,
+                    "E_plus_per_km": res.E_plus,
+                    "E_minus_per_km": res.E_minus,
                 }
             )
 

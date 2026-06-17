@@ -38,18 +38,21 @@ def _F_brake_max_electric_vec(v: np.ndarray, p: Parameters) -> np.ndarray:
     Wektorowa wersja physics.F_brake_max_electric.
 
     Dla każdego v w tablicy:
-      - v < v_brake_min       → 0 (poniżej progu, tylko mechaniczny)
-      - v_brake_min ≤ v < v_b → F_max (region stałej siły)
-      - v ≥ v_breakpoint      → P_eff_max / v (region stałej mocy)
+      - v < v_brake_min        → 0 (poniżej progu, tylko mechaniczny)
+      - v_brake_min ≤ v ≤ v_1  → F_max (region stałej siły)
+      - v_1 < v ≤ v_2          → P_eff_max / v (region stałej mocy)
+      - v > v_2                → P_eff_max · v_2 / v² (osłabianie pola)
     """
     F = np.zeros_like(v)
-    # Region stałej siły (między progiem a prędkością łamania)
-    mask_const = (v >= p.v_brake_min) & (v < p.v_breakpoint)
+    # Region 1 — stała siła (między progiem a v_1)
+    mask_const = (v >= p.v_brake_min) & (v <= p.v_breakpoint)
     F[mask_const] = p.F_max
-    # Region stałej mocy (powyżej prędkości łamania)
-    mask_power = v >= p.v_breakpoint
-    # zabezpieczenie przed dzieleniem przez 0 (v >= v_breakpoint > 0 zawsze)
+    # Region 2 — stała moc (v_1 < v ≤ v_2)
+    mask_power = (v > p.v_breakpoint) & (v <= p.v_field_weak)
     F[mask_power] = p.P_eff_max / v[mask_power]
+    # Region 3 — osłabianie pola (v > v_2)
+    mask_fw = v > p.v_field_weak
+    F[mask_fw] = p.P_eff_max * p.v_field_weak / (v[mask_fw] * v[mask_fw])
     return F
 
 
@@ -114,6 +117,7 @@ class EnergyResults:
     E_jednostkowa: float  # [kWh / (100 km · t)] - dawna konwencja
     E_per_km: float  # [kWh/km] - standard porównawczy KDP (RailEnergy)
     E_per_seat_km: float  # [Wh/(seat·km)] - standard pasażerski (przy zał. 500 miejsc)
+    E_per_btkm: float  # [Wh/(brutto-tona·km)] (A)
     P_pant_max: float  # [W]
     P_pant_avg: float  # [W]
     I_pant_max: float  # [A]
@@ -197,7 +201,7 @@ def compute_energy(sim: SimulationProfile, p: Parameters) -> EnergyResults:
     P_kolo[mask_brake] = -F_brake_el[mask_brake] * v[mask_brake]
     # Moc zwrócona do sieci (przez η_rec i η_grid)
     P_pant_rec[mask_brake] = (
-        F_brake_el[mask_brake] * v[mask_brake] * p.eta_rec * p.eta_grid
+        F_brake_el[mask_brake] * v[mask_brake] * p.eta_rec_eff  # (A) efekt. rekuperacja
     )
     # Potrzeby własne nadal pobierane w hamowaniu
     P_pant_draw[mask_brake] = p.P_aux
@@ -251,6 +255,7 @@ def compute_energy(sim: SimulationProfile, p: Parameters) -> EnergyResults:
     E_jednostkowa = E_netto_kWh / (L_km * m_t) * 100.0
     E_per_km = E_netto_kWh / L_km
     E_per_seat_km = E_netto_kWh * 1000.0 / (L_km * n_seats)  # *1000 = kWh→Wh
+    E_per_btkm = E_netto_kWh * 1000.0 / (L_km * m_t)  # (A) Wh/(bt·km)
 
     P_pant_max = float(np.max(P_pant_draw))
     P_pant_avg = E_pant_netto / sim.t[-1]
@@ -275,6 +280,7 @@ def compute_energy(sim: SimulationProfile, p: Parameters) -> EnergyResults:
         E_jednostkowa=E_jednostkowa,
         E_per_km=E_per_km,
         E_per_seat_km=E_per_seat_km,
+        E_per_btkm=E_per_btkm,
         P_pant_max=P_pant_max,
         P_pant_avg=P_pant_avg,
         I_pant_max=I_pant_max,

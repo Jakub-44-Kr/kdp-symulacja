@@ -63,6 +63,7 @@ def forward_pass_njit(
     F_max,
     P_eff_max,
     v_breakpoint,
+    v_field_weak,
     davis_A,
     davis_B,
     davis_C,
@@ -101,11 +102,13 @@ def forward_pass_njit(
 
         # Wypadkowa siła sterująca u(v, x)
         if current_phase == 1:
-            # F_traction(v)
+            # F_traction(v) — charakterystyka trójregionowa
             if v[i] <= v_breakpoint:
-                u = F_max
+                u = F_max  # region 1
+            elif v[i] <= v_field_weak:
+                u = P_eff_max / v[i]  # region 2
             else:
-                u = P_eff_max / v[i]
+                u = P_eff_max * v_field_weak / (v[i] * v[i])  # region 3
         elif current_phase == 2:
             # napęd kompensuje opory + grawitację
             F_op_loc = davis_A + davis_B * v[i] + davis_C * v[i] * v[i]

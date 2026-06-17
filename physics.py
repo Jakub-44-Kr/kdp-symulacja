@@ -33,11 +33,13 @@ def F_traction(v: float, p: Parameters) -> float:
     """
     Siła trakcyjna w funkcji prędkości [N].
 
-    Charakterystyka dwuczęściowa (uproszczenie - bez regionu osłabienia pola):
-      - Region 1 (rozruchowy): v < v_b  →  F = F_max
-      - Region 2 (stała moc):  v ≥ v_b  →  F = P_eff_max / v
+    Charakterystyka trójregionowa (wzór \eqref{eq:Ftr} z pracy):
+      - Region 1 (rozruchowy):      v ≤ v_1        →  F = F_max
+      - Region 2 (stała moc):       v_1 < v ≤ v_2  →  F = P_eff_max / v
+      - Region 3 (osłabianie pola): v > v_2        →  F = P_eff_max · v_2 / v²
 
-    gdzie v_b = P_eff_max / F_max  (prędkość łamania).
+    gdzie v_1 = P_eff_max / F_max (p.v_breakpoint), v_2 = p.v_field_weak.
+    W regionie 3 moc maleje proporcjonalnie do v_2/v.
 
     Dla v → 0 zwracamy F_max (zabezpieczenie przed dzieleniem przez zero).
 
@@ -49,10 +51,10 @@ def F_traction(v: float, p: Parameters) -> float:
         Siła trakcyjna [N], zawsze ≥ 0.
     """
     if v <= p.v_breakpoint:
-        # Region stałej siły rozruchowej
-        return p.F_max
-    # Region stałej mocy: F = P/v
-    return p.P_eff_max / v
+        return p.F_max  # region 1: stała siła
+    if v <= p.v_field_weak:
+        return p.P_eff_max / v  # region 2: stała moc
+    return p.P_eff_max * p.v_field_weak / (v * v)  # region 3: osłabianie pola
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -168,9 +170,10 @@ def F_brake_max_electric(v: float, p: Parameters) -> float:
 
     Założenie modelu: napęd w trybie generatorowym ma tę samą charakterystykę
     co w trybie napędowym (Steimel 2008):
-      - v ≥ v_brake_min ∧ v < v_b   →  F_ham,el = F_max
-      - v ≥ v_breakpoint            →  F_ham,el = P_eff_max / v
-      - v < v_brake_min             →  F_ham,el = 0  (poniżej progu, tylko hamulec mechaniczny)
+      - v < v_brake_min            →  F_ham,el = 0  (tylko hamulec mechaniczny)
+      - v_brake_min ≤ v ≤ v_1      →  F_ham,el = F_max
+      - v_1 < v ≤ v_2              →  F_ham,el = P_eff_max / v
+      - v > v_2                    →  F_ham,el = P_eff_max · v_2 / v²
 
     Args:
         v: Prędkość pociągu [m/s].
@@ -182,9 +185,11 @@ def F_brake_max_electric(v: float, p: Parameters) -> float:
     """
     if v < p.v_brake_min:
         return 0.0
-    if v < p.v_breakpoint:
+    if v <= p.v_breakpoint:
         return p.F_max
-    return p.P_eff_max / v
+    if v <= p.v_field_weak:
+        return p.P_eff_max / v
+    return p.P_eff_max * p.v_field_weak / (v * v)
 
 
 def F_brake_required(

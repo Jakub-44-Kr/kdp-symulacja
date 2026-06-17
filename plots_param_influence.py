@@ -1,16 +1,22 @@
 """
-plots_param_influence.py — Wpływ pojedynczych parametrów na profil energii.
+plots_param_influence.py — Wpływ pojedynczych parametrów na zużycie energii.
 
-Generuje serię wykresów do podrozdziałów rozdziału 7:
-  - Wpływ prędkości eksploatacyjnej (4×2 paneli długości)
-  - Wpływ masy składu (4×2 paneli długości)
-  - Wpływ mocy znamionowej (4×2 paneli długości)
-  - Wpływ pochylenia trasy (4×2 paneli długości)
-  - Wpływ długości odcinka (1 panel: E_pant vs L dla różnych prędkości)
+Generuje serię wykresów do podrozdziałów rozdziału 7. Dla każdego parametru
+powstają dwie strony:
 
-Każdy panel pokazuje E(x) — energię kumulowaną wzdłuż trasy.
-Kolory = wartość parametru, linestyle = system zasilania (AC ciągła, DC przerywana).
-Legenda zawiera czas przejazdu T dla obu systemów.
+  1. CHARAKTERYSTYKA E/km — zależność jednostkowego zużycia energii
+     E_pant,netto/L [kWh/km] od wartości parametru. Dwa panele (AC | DC),
+     jedna krzywa na długość odcinka (kolor = L). Każdy punkt to końcowe
+     E_per_km całego przejazdu — ta sama metryka, co w analizie OAT i Sobola.
+       - Wpływ prędkości eksploatacyjnej v_max
+       - Wpływ masy składu m
+       - Wpływ mocy znamionowej P  (DC: sufit 6 MW → pojedynczy punkt)
+       - Wpływ pochylenia trasy i
+
+  2. PROFIL PRĘDKOŚCI v(x) — 4×2 panele długości, profil prędkości wzdłuż
+     trasy (kolor = wartość parametru, AC ciągła / DC przerywana).
+
+Dodatkowo wykres wpływu długości odcinka: E/km vs L dla różnych prędkości.
 
 Uruchomienia modelu realizowane równolegle (multiprocessing).
 
@@ -73,12 +79,16 @@ PARAM_SWEEPS = {
         "label": "Wpływ prędkości eksploatacyjnej $v_{max}$",
         "fmt": lambda v: f"{v * 3.6:.0f} km/h",
         "param_name": "$v_{max}$",
+        "to_x": lambda v: v * 3.6,  # SI (m/s) -> km/h na osi X
+        "xlabel": "Prędkość eksploatacyjna $v_{max}$ [km/h]",
     },
     "m": {
         "values": [m * 1000 for m in (450, 500, 550, 600, 650, 700, 750)],
         "label": "Wpływ masy składu $m$",
         "fmt": lambda v: f"{v / 1000:.0f} t",
         "param_name": "$m$",
+        "to_x": lambda v: v / 1000.0,  # kg -> t
+        "xlabel": "Masa składu $m$ [t]",
     },
     "P_nom": {
         "values": [P * 1e6 for P in (6, 7, 8, 9, 10, 11, 12)],
@@ -86,13 +96,17 @@ PARAM_SWEEPS = {
         "fmt": lambda v: f"{v / 1e6:.0f} MW",
         "param_name": "$P$",
         # Dla DC sufit trakcji = 6 MW — zadania DC dla mocy > 6 MW pomijane.
-        "cap_si": {"DC": 6e6},
+        "cap_si": {"DC": 9e6},
+        "to_x": lambda v: v / 1e6,  # W -> MW
+        "xlabel": "Moc znamionowa $P$ [MW]",
     },
     "gradient": {
         "values": [-5.0, -3.0, -1.0, 1.0, 3.0, 5.0],
         "label": "Wpływ pochylenia trasy $i$",
         "fmt": lambda v: f"{v:+.0f} ‰",
         "param_name": "$i$",
+        "to_x": lambda v: v,  # ‰ bez zmian
+        "xlabel": "Pochylenie trasy $i$ [‰]",
     },
 }
 
@@ -146,6 +160,8 @@ def _worker(task: dict) -> dict:
         "T_total_s": sim.T_total,
         "v_max_param": task["value_SI"] if task["param_name"] == "v_max" else None,
         "E_pant_netto_kWh": energy.E_pant_netto * J_TO_KWH,
+        "E_per_km_kWh": energy.E_per_km,  # kWh/km (metryka jednostkowa)
+        "E_per_btkm_Wh": energy.E_per_btkm,  # Wh/(brutto-tona·km)
     }
 
 
@@ -154,10 +170,9 @@ def _run_all_tasks(tasks: list[dict], n_workers: int | None = None) -> list[dict
     if n_workers is None:
         n_workers = max(1, (os.cpu_count() or 4) - 1)
     print(f"    {len(tasks)} przejazdów na {n_workers} procesach...")
-    results = [None] * len(tasks)
+    # executor.map zachowuje kolejność zadań → wyniki są zgodne z `tasks`
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        for i, res in enumerate(executor.map(_worker, tasks, chunksize=4)):
-            results[i] = res
+        results = list(executor.map(_worker, tasks, chunksize=4))
     return results
 
 
@@ -187,139 +202,96 @@ def plot_param_influence(
     save_dir: Path = OUTPUT_DIR,
 ) -> Path:
     """
-    Generuje stronę 4×2 paneli dla wpływu jednego parametru.
+    Charakterystyka wpływu parametru na jednostkowe zużycie energii E/km.
 
-    Każdy panel = jedna długość trasy z TRACK_LENGTHS_KM.
-    Każda krzywa = jedna wartość parametru × jeden system.
+    Jedna strona = dwa panele (AC | DC). Na każdym panelu:
+      - oś X: wartość badanego parametru (jednostki wyświetlane),
+      - oś Y: jednostkowe zużycie energii netto E_pant,netto/L [kWh/km],
+      - jedna krzywa na długość odcinka z TRACK_LENGTHS_KM (kolor = L).
+
+    To zależność f(parametr), a nie profil wzdłuż trasy: każdy punkt krzywej
+    to KOŃCOWE E_per_km całego przejazdu — ta sama metryka, co w analizie
+    OAT i Sobola. Spadek krzywych wraz z rosnącym L pokazuje amortyzację
+    energii rozpędzania/hamowania na dłuższym dystansie.
     """
     spec = PARAM_SWEEPS[param_name]
-    values = spec["values"]
-    n_values = len(values)
     cmap = plt.get_cmap(CMAP_NAME)
-    colors = [cmap(i / max(1, n_values - 1)) for i in range(n_values)]
+    n_L = len(TRACK_LENGTHS_KM)
+    L_colors = {L: cmap(i / max(1, n_L - 1)) for i, L in enumerate(TRACK_LENGTHS_KM)}
 
-    fig, axes = plt.subplots(4, 2, figsize=(11, 13), sharey=False)
-    axes_flat = axes.flatten()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2), sharey=True)
+    sys_axes = {"AC": axes[0], "DC": axes[1]}
+    sys_titles = {"AC": "2×25 kV AC", "DC": "3 kV DC"}
 
-    # Grupowanie wyników po L_m
-    by_L = {}
-    for r in results:
-        L_m = r["L_m"]
-        by_L.setdefault(L_m, []).append(r)
+    for system in SYSTEMS:
+        ax = sys_axes[system]
+        for L_km in TRACK_LENGTHS_KM:
+            L_m = L_km * 1000.0
+            pts = [
+                (r["value_SI"], r["E_per_km_kWh"])
+                for r in results
+                if r["system"] == system and r["L_m"] == L_m
+            ]
+            if not pts:
+                continue
+            pts.sort(key=lambda t: t[0])
+            xs = [spec["to_x"](v) for v, _ in pts]
+            ys = [e for _, e in pts]
+            multi = len(pts) > 1
+            ax.plot(
+                xs,
+                ys,
+                color=L_colors[L_km],
+                marker="o",
+                markersize=4,
+                linewidth=1.6 if multi else 0,
+                linestyle="-" if multi else "None",
+            )
+        ax.set_title(sys_titles[system])
+        ax.set_xlabel(spec["xlabel"])
 
-    for panel_idx, L_km in enumerate(TRACK_LENGTHS_KM):
-        ax = axes_flat[panel_idx]
-        L_m = L_km * 1000.0
-        panel_results = by_L.get(L_m, [])
+    sys_axes["AC"].set_ylabel("Jednostkowe zużycie energii $E_{pant,netto}/L$ [kWh/km]")
 
-        # Słownik: (value_SI, system) → wynik
-        by_key = {(r["value_SI"], r["system"]): r for r in panel_results}
+    # Adnotacja sufitu mocy DC przy przemiataniu mocy (DC = pojedynczy punkt)
+    if param_name == "P_nom":
+        sys_axes["DC"].text(
+            0.5,
+            0.04,
+            "sufit trakcji 9 MW",
+            transform=sys_axes["DC"].transAxes,
+            ha="center",
+            fontsize=8,
+            style="italic",
+            color="0.4",
+        )
 
-        # Czasy przejazdu dla legendy (None gdy brak danych, np. DC powyżej sufitu)
-        T_by_value = {}
-        for v in values:
-            r_ac = by_key.get((v, "AC"))
-            r_dc = by_key.get((v, "DC"))
-            T_AC = r_ac["T_total_s"] if r_ac is not None else None
-            T_DC = r_dc["T_total_s"] if r_dc is not None else None
-            T_by_value[v] = (T_AC, T_DC)
-
-        # Najpierw DC (przerywane, na spodzie), potem AC (ciągłe, na wierzchu)
-        for v_idx, value_SI in enumerate(values):
-            color = colors[v_idx]
-            r_dc = by_key.get((value_SI, "DC"))
-            if r_dc is not None:
-                ax.plot(
-                    r_dc["x"] / 1000.0,
-                    r_dc["E_cum_J"] * J_TO_KWH,
-                    color=color,
-                    linestyle=LINESTYLE_DC,
-                    linewidth=1.8,
-                    alpha=0.7,
-                )
-        for v_idx, value_SI in enumerate(values):
-            color = colors[v_idx]
-            r_ac = by_key.get((value_SI, "AC"))
-            if r_ac is not None:
-                ax.plot(
-                    r_ac["x"] / 1000.0,
-                    r_ac["E_cum_J"] * J_TO_KWH,
-                    color=color,
-                    linestyle=LINESTYLE_AC,
-                    linewidth=1.4,
-                )
-
-        ax.set_xlim(0, L_km)
-        ax.set_xlabel("Pozycja $x$ [km]")
-        ax.set_ylabel("Energia kumulowana $E_{pant}$ [kWh]")
-        ax.set_title(f"L = {L_km} km")
-        ax.axhline(0, color="black", linewidth=0.5)
-
-    # Legenda jako osobny element pod wykresami
-    legend_handles = []
-    legend_labels = []
-    L_ref = TRACK_LENGTHS_KM[3] * 1000.0  # bierzemy czasy z L=200 km jako referencyjne
-    panel_ref = by_L.get(L_ref, [])
-    by_key_ref = {(r["value_SI"], r["system"]): r for r in panel_ref}
-
-    for v_idx, value_SI in enumerate(values):
-        color = colors[v_idx]
-        T_AC = by_key_ref.get((value_SI, "AC"), {}).get("T_total_s", 0)
-        T_DC = by_key_ref.get((value_SI, "DC"), {}).get("T_total_s", 0)
-        label = _format_legend_entry(value_SI, T_AC, T_DC, param_name)
-        # Linia ciągła + przerywana w jednej legendzie
-        from matplotlib.lines import Line2D
-
-        legend_handles.append(Line2D([0], [0], color=color, linewidth=2))
-        legend_labels.append(label)
-
-    # Dodatkowo: legenda systemów
+    # Wspólna legenda długości odcinka (kolor = L)
     from matplotlib.lines import Line2D
 
-    sys_handles = [
+    L_handles = [
         Line2D(
             [0],
             [0],
-            color="black",
-            linestyle=LINESTYLE_AC,
-            linewidth=1.5,
-            label="AC (2×25 kV)",
-        ),
-        Line2D(
-            [0],
-            [0],
-            color="black",
-            linestyle=LINESTYLE_DC,
-            linewidth=1.5,
-            label="DC (3 kV)",
-        ),
+            color=L_colors[L],
+            marker="o",
+            markersize=4,
+            linewidth=1.6,
+            label=f"{L} km",
+        )
+        for L in TRACK_LENGTHS_KM
     ]
-
-    # Legenda parametru (góra) - obecnie w środku (4×2 → położenie środkowe)
     fig.legend(
-        legend_handles,
-        legend_labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.00),
-        ncol=3,
-        title=f"{spec['param_name']}  (czas referencyjny dla L = 200 km)",
+        handles=L_handles,
+        loc="center right",
+        bbox_to_anchor=(1.0, 0.5),
+        title="Długość odcinka $L$",
         frameon=True,
         framealpha=0.95,
-        fontsize=8,
-    )
-    # Legenda systemów (dół)
-    fig.legend(
-        handles=sys_handles,
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.01),
-        ncol=2,
-        title="System zasilania",
-        frameon=True,
-        framealpha=0.95,
+        fontsize=9,
     )
 
-    fig.suptitle(spec["label"], fontsize=14, y=1.04, fontweight="bold")
-    fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+    fig.suptitle(spec["label"], fontsize=14, y=1.02, fontweight="bold")
+    fig.tight_layout(rect=(0.0, 0.0, 0.87, 0.96))
 
     safe_name = param_name.replace("_", "")
     path = save_dir / f"influence_{safe_name}.png"
@@ -439,7 +411,7 @@ def plot_param_influence_velocity(
         loc="upper center",
         bbox_to_anchor=(0.5, 1.00),
         ncol=3,
-        title=f"{spec['param_name']}  (czas referencyjny dla L = 200 km)",
+        title=spec["param_name"],
         frameon=True,
         framealpha=0.95,
         fontsize=8,
@@ -456,7 +428,7 @@ def plot_param_influence_velocity(
 
     title_velocity = spec["label"].replace("Wpływ", "Profile prędkości — wpływ")
     fig.suptitle(title_velocity, fontsize=14, y=1.04, fontweight="bold")
-    fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.97))
 
     safe_name = param_name.replace("_", "")
     path = save_dir / f"influence_velocity_{safe_name}.png"
@@ -474,7 +446,10 @@ def plot_length_influence(
     save_dir: Path = OUTPUT_DIR, n_workers: int | None = None
 ) -> Path:
     """
-    Pojedynczy wykres: E_pant_netto (skalar) vs L, dla 5-6 prędkości × 2 systemy.
+    Pojedynczy wykres: jednostkowe zużycie E_per_km [kWh/km] vs L,
+    dla 5-6 prędkości × 2 systemy. Pokazuje spadek zużycia jednostkowego
+    z długością odcinka (amortyzacja energii rozpędzania/hamowania) —
+    w przeciwieństwie do energii całkowitej, która z L rośnie ~liniowo.
     """
     # Sweep parametrów
     velocities_kmh = (250, 280, 310, 340, 370, 400)
@@ -494,7 +469,7 @@ def plot_length_influence(
                 )
 
     t0 = time.perf_counter()
-    print("  >>> Sweep L (E_pant vs L)...")
+    print("  >>> Sweep L (E/km vs L)...")
     results = _run_all_tasks(tasks, n_workers)
     print(f"    {len(tasks)} przejazdów w {time.perf_counter() - t0:.1f} s")
 
@@ -523,7 +498,7 @@ def plot_length_influence(
                         and r["system"] == system
                     ):
                         xs.append(L_km)
-                        ys.append(r["E_pant_netto_kWh"])
+                        ys.append(r["E_per_km_kWh"])
                         break
             ax.plot(
                 xs,
@@ -537,15 +512,17 @@ def plot_length_influence(
             )
 
     ax.set_xlabel("Długość odcinka $L$ [km]", fontsize=11)
-    ax.set_ylabel("Energia $E_{pant,netto}$ [kWh]", fontsize=11)
+    ax.set_ylabel(
+        "Jednostkowe zużycie energii $E_{pant,netto}/L$ [kWh/km]", fontsize=11
+    )
     ax.set_title(
-        "Wpływ długości odcinka na całkowite zużycie energii\n"
+        "Wpływ długości odcinka na jednostkowe zużycie energii\n"
         "dla różnych prędkości eksploatacyjnych i systemów zasilania",
         fontsize=12,
     )
-    ax.legend(loc="upper left", ncol=2, framealpha=0.95, fontsize=9)
+    ax.legend(loc="upper right", ncol=2, framealpha=0.95, fontsize=9)
     ax.set_xlim(0, max(lengths_km) * 1.02)
-    ax.set_ylim(bottom=0)
+    # oś Y autoskalowana — wartości ~22-32 kWh/km, wymuszanie 0 spłaszczyłoby zakres
 
     path = save_dir / "influence_length.png"
     fig.savefig(path)

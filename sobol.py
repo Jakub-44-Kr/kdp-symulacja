@@ -10,7 +10,11 @@ Realizuje metodykę z rozdz. 4.6:
 
 Biblioteka: SALib (Herman 2017).
 
-Funkcja celu: E_pant_netto [kWh].
+Funkcja celu: jednostkowe zużycie energii E_per_km [kWh/km]
+(energia netto na pantografie odniesiona do długości odcinka).
+Normalizacja względem L usuwa trywialny, niemal liniowy wzrost energii
+całkowitej z długością trasy, dzięki czemu dekompozycja wariancji ujawnia
+wpływ pozostałych parametrów (prędkość, pochylenie) zamiast samej długości.
 
 Autor: Jakub Król, PW WE, 2026
 """
@@ -35,44 +39,42 @@ from simulation import run_simulation
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def build_problem() -> dict:
-    """
-    Definicja problemu dla SALib: 5 parametrów, rozkłady jednostajne.
-
-    Kolejność parametrów MUSI być stała (używana do mapowania kolumn
-    macierzy próbek na parametry modelu).
-    """
+def build_problem(system: str) -> dict:
+    """Problem SALib: 5 parametrów, rozkłady jednostajne, ZAKRESY PER SYSTEM (spójne z OAT).
+    AC: v_max 100-400 km/h, P_nom 6-12 MW. DC: v_max 100-250 km/h (sufit), P_nom 6-9 MW."""
+    system = system.upper()
+    if system == "DC":
+        v_bounds = [100 / 3.6, 250 / 3.6]
+        P_bounds = [6e6, 9e6]
+    else:
+        v_bounds = [100 / 3.6, 400 / 3.6]
+        P_bounds = [6e6, 12e6]
     return {
         "num_vars": 5,
         "names": ["v_max", "m", "P_nom", "gradient", "L"],
         "bounds": [
-            [250 / 3.6, 400 / 3.6],  # v_max [m/s]
-            [450_000.0, 750_000.0],  # m [kg]
-            [6e6, 12e6],  # P_nom [W]
-            [-5.0, 5.0],  # gradient [‰]
-            [50_000.0, 400_000.0],  # L [m]
+            v_bounds,
+            [450_000.0, 750_000.0],
+            P_bounds,
+            [-5.0, 5.0],
+            [50_000.0, 400_000.0],
         ],
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  WORKER — jedno uruchomienie modelu dla wektora parametrów
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _sobol_worker(args: tuple[np.ndarray, str]) -> float:
+def _sobol_worker(args: tuple[np.ndarray, str, bool]) -> float:
     """
     Worker multiprocessing. Dostaje wektor parametrów (jeden wiersz macierzy
-    próbek Saltelli) + system zasilania, zwraca E_pant_netto [kWh].
+    próbek Saltelli) + system zasilania, zwraca E_per_km [kWh/km].
 
     Args:
-        args: (param_vector, system) gdzie param_vector to
+        args: (param_vector, system, regen) gdzie param_vector to
               [v_max, m, P_nom, gradient, L] w SI.
 
     Returns:
-        E_pant_netto w kWh.
+        E_per_km — jednostkowe zużycie energii netto [kWh/km].
     """
-    param_vector, system = args
+    param_vector, system, regen = args
     v_max, m, P_nom, gradient, L = param_vector
 
     base = Parameters.base()
@@ -83,12 +85,13 @@ def _sobol_worker(args: tuple[np.ndarray, str]) -> float:
         P_nom=float(P_nom),
         gradient=float(gradient),
         L=float(L),
+        regen=bool(regen),
     )
 
     profile = [(0.0, p.L, p.gradient)]
     sim = run_simulation(p, profile)
     energy = compute_energy(sim, p)
-    return energy.E_pant_netto / 3.6e6  # kWh
+    return energy.E_per_km  # kWh/km (E_pant_netto / L)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -99,6 +102,7 @@ def _sobol_worker(args: tuple[np.ndarray, str]) -> float:
 def evaluate_samples(
     param_values: np.ndarray,
     system: str,
+    regen: bool = True,
     n_workers: int | None = None,
 ) -> np.ndarray:
     """
@@ -110,12 +114,12 @@ def evaluate_samples(
         n_workers: liczba procesów.
 
     Returns:
-        Wektor wyjść Y (E_pant_netto [kWh]) o długości równej liczbie próbek.
+        Wektor wyjść Y (E_per_km [kWh/km]) o długości równej liczbie próbek.
     """
     if n_workers is None:
         n_workers = max(1, (os.cpu_count() or 4) - 1)
 
-    tasks = [(row, system) for row in param_values]
+    tasks = [(row, system, regen) for row in param_values]
     n_total = len(tasks)
     Y = np.zeros(n_total, dtype=np.float64)
 
@@ -137,6 +141,7 @@ def evaluate_samples(
 def run_sobol_for_system(
     system: str,
     N: int = 512,
+    regen: bool = True,
     n_workers: int | None = None,
     seed: int = 42,
 ) -> dict:
@@ -152,7 +157,7 @@ def run_sobol_for_system(
     Returns:
         Słownik z indeksami S1, ST, ich błędami (conf) i metadanymi.
     """
-    problem = build_problem()
+    problem = build_problem(system)
     n = problem["num_vars"]
 
     # Próbkowanie Saltelli (sekwencja Sobola)
@@ -162,7 +167,7 @@ def run_sobol_for_system(
 
     # Ewaluacja modelu
     t0 = time.perf_counter()
-    Y = evaluate_samples(param_values, system, n_workers)
+    Y = evaluate_samples(param_values, system, regen, n_workers)
     print(f"    [{system}] ewaluacja: {time.perf_counter() - t0:.1f} s")
 
     # Analiza Sobola
@@ -170,6 +175,7 @@ def run_sobol_for_system(
 
     return {
         "system": system,
+        "regen": regen,
         "N": N,
         "n_runs": n_runs,
         "names": problem["names"],
@@ -277,8 +283,8 @@ def print_sobol_report(results: dict) -> None:
         f"{results['n_runs']} uruchomień)"
     )
     print(
-        f"  E_pant: średnia = {results['Y_mean']:.1f} kWh, "
-        f"odch.std = {results['Y_std']:.1f} kWh"
+        f"  E/km: średnia = {results['Y_mean']:.2f} kWh/km, "
+        f"odch.std = {results['Y_std']:.2f} kWh/km"
     )
     print("=" * 78)
     print(

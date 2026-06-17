@@ -136,9 +136,10 @@ def check_energy_balance(
     P_grav = sim.F_grav * sim.v
     E_grav = float(np.sum(0.5 * (P_grav[:-1] + P_grav[1:]) * dt))
 
-    # Po przejeździe pociąg ma v=0, więc cała E_kin została rozproszona w hamowaniu
-    # Bilans: E_trakcja_kolo = E_op + E_grav (energia kin. rozproszona w hamowaniu)
-    E_expected = E_op + E_grav
+    # Napęd musi dostarczyć energię kinetyczną (0→v_max) ORAZ pokryć opory
+    # i grawitację. E_kin jest rozpraszana w hamowaniu (osobny strumień),
+    # więc NIE odejmuje się od E_trakcja_kolo — musi być po stronie oczekiwanej.
+    E_expected = E_kin + E_op + E_grav
     rel_error = (
         abs(energy.E_trakcja_kolo - E_expected) / E_expected if E_expected > 0 else 0
     )

@@ -24,17 +24,17 @@ from pathlib import Path
 # ═══════════════════════════════════════════════════════════════════════════
 
 # --- Parametry ruchu i taboru (objęte analizą wrażliwości OAT) ---
-V_MAX_KMH: float = 320.0  # Prędkość eksploatacyjna [km/h] — baza 320, OAT 250-400
+V_MAX_KMH: float = 250.0  # Prędkość eksploatacyjna [km/h] — baza 250, OAT 100-400 (A)
 MASS_TON: float = 600.0  # Masa składu [t] — baza 600, OAT 450/600/750
 POWER_MW: float = (
     12.0  # Moc znamionowa [MW] — baza 12 (AC→12 / DC→6 wg sufitu), OAT 6/9/12
 )
 GRADIENT_PROMILE: float = 0.0  # Pochylenie trasy [‰] — baza 0, OAT 0-5
-LENGTH_KM: float = 180.0  # Długość odcinka [km] — baza 180 (Wrocław-Poznań)
+LENGTH_KM: float = 100.0  # Długość odcinka [km] — baza 100 (A)
 
 # --- System zasilania ---
 # "AC" = 2x25 kV AC | "DC" = 3 kV DC
-POWER_SYSTEM: str = "DC"
+POWER_SYSTEM: str = "AC"
 
 # --- Parametry sterownicze (stałe w OAT, mogą stać się zmiennymi) ---
 COASTING_DISTANCE_KM: float = (
@@ -64,28 +64,31 @@ DAVIS_C: float = 6.45  # [N·s²/m²] — opór aerodynamiczny
 # - AC 2×25 kV: 0.88 - niskie prądy (~400 A), małe straty I²R w sieci trakcyjnej
 # - DC 3 kV: 0.83 - wysokie prądy (~4000 A), znaczące straty I²R (10× wyższe niż AC)
 # Wartości zgodne z literaturą (Steimel 2008, Lukaszewicz 2009, RailEnergy).
-ETA_TR_AC: float = 0.88  # Tor przekazywania mocy dla AC
-ETA_TR_DC: float = 0.83  # Tor przekazywania mocy dla DC
+ETA_TR_AC: float = 0.86  # Tor przekazywania mocy dla AC (A)
+ETA_TR_DC: float = 0.82  # Tor przekazywania mocy dla DC (A)
 ETA_TR: float = 0.88  # Domyślne (zachowane dla kompatybilności, używane dla AC)
 ETA_REC: float = (
     0.85  # Tor rekuperacji (silnik w trybie generatorowym + przekształtniki)
 )
 ETA_GRID_AC: float = 1.0  # Receptywność sieci 2x25 kV AC (rozdz. 3.5)
 ETA_GRID_DC: float = 0.0  # Receptywność sieci 3 kV DC (pojedynczy pociąg) (rozdz. 3.5)
+# --- Rekuperacja EFEKTYWNA (silnik+przekształtnik+receptywność), jedna liczba/system (A) ---
+ETA_REC_EFF_AC: float = 0.80  # 2x25 kV AC
+ETA_REC_EFF_DC: float = 0.15  # 3 kV DC (ograniczona receptywność)
 
 # --- Moc potrzeb własnych P_aux (norma CLC/TS 50591:2013) ---
-P_AUX_KW: float = 250.0  # [kW] — typowa wartość dla KDP (HVAC, oświetlenie, etc.)
+P_AUX_KW: float = 450.0  # [kW] — potrzeby własne KDP (A)
 
 # --- Ograniczenia mocy wg systemu zasilania (rozdz. 5.3, wzór 33) ---
 P_MAX_AC_MW: float = 12.0  # Górne ograniczenie mocy dla 2x25 kV AC
-P_MAX_DC_MW: float = 6.0  # Górne ograniczenie mocy dla 3 kV DC
+P_MAX_DC_MW: float = 9.0  # Górne ograniczenie mocy dla 3 kV DC (A)
 
 # --- Napięcia sieci trakcyjnej (do wyliczania prądu pantografu) ---
 U_GRID_AC: float = 25_000.0  # [V] — strona pierwotna 2x25 kV (do obciążalności)
 U_GRID_DC: float = 3_000.0  # [V] — 3 kV DC
 
 # --- Limity prądu pantografu (TSI ENE, do walidacji) ---
-I_MAX_AC: float = 400.0  # [A] — limit ciągły dla 2x25 kV AC
+I_MAX_AC: float = 600.0  # [A] — limit ciągły dla 2x25 kV AC
 I_MAX_DC: float = 4_000.0  # [A] — limit ciągły dla 3 kV DC
 
 # --- Charakterystyka hamowania (rozdz. 4.2) ---
@@ -110,6 +113,15 @@ MU_ADHESION: float = 0.30  # Współczynnik przyczepności sucho (informacyjnie)
 ADHESION_MASS_FACTOR: float = (
     0.50  # m_ad / m — udział masy na osie napędne (połowa dla 8-wagonowca)
 )
+
+
+# --- Charakterystyka trakcyjna — początek osłabiania pola (region 3) ---
+# v_2 [km/h] — powyżej tej prędkości F = P·v_2/v², więc moc maleje (~v_2/v).
+# W taborze KDP region stałej mocy sięga blisko v_max; osłabianie pola to
+# wąski obszar tuż pod prędkością maksymalną. 300 km/h skalibrowane tak, by
+# CRH-3/Velaro (8 MW) osiągał ~350 km/h (Li et al. 2013).
+# UWAGA: v_2 wyznacza pułap prędkości równowagi F_tr=F_op przy danej mocy.
+V2_FIELD_WEAKENING_KMH: float = 300.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -191,12 +203,16 @@ class Parameters:
     davis_C: float = DAVIS_C
     eta_tr: float = ETA_TR
     eta_rec: float = ETA_REC
+    regen: bool = True  # wariant z rekuperacją (False => E_rec=0) (A)
     P_aux: float = field(default=P_AUX_KW * 1e3)  # [W]
     a_brake_max: float = A_BRAKE_MAX  # [m/s²] zachowane jako górny bezpiecznik
     mu_b_base: float = MU_B_BASE  # przyczepność graniczna hamowania (TSI 4.2.4.6.1)
     braked_frac: float = BRAKED_MASS_FRACTION  # udział masy hamowanej m_ham/m
     v_brake_min: float = field(default=V_BRAKE_MIN_KMH / 3.6)  # [m/s]
     a_launch_max: float = A_LAUNCH_MAX
+    v_field_weak: float = field(
+        default=V2_FIELD_WEAKENING_KMH / 3.6
+    )  # v_2 [m/s] — początek osłabiania pola
     rot_mass_factor: float = ROTATING_MASS_FACTOR
 
     # --- Stałe numeryczne ---
@@ -216,14 +232,21 @@ class Parameters:
         Efektywna max moc na pantografie wg wzoru (33) z pracy.
         Dla DC ograniczona do 6 MW, dla AC do 12 MW.
         """
-        if self.power_system == "DC":
-            return min(self.P_nom, P_MAX_DC_MW * 1e6)
-        return min(self.P_nom, P_MAX_AC_MW * 1e6)
+        # (A) twardy limit na PANTOGRAFIE => P_eff na KOLE = (min(P_nom,P_MAX)-P_aux)*eta_tr
+        P_cap = P_MAX_DC_MW * 1e6 if self.power_system == "DC" else P_MAX_AC_MW * 1e6
+        return (min(self.P_nom, P_cap) - self.P_aux) * self.eta_tr_effective
 
     @property
     def eta_grid(self) -> float:
         """Receptywność sieci na energię rekuperowaną."""
         return ETA_GRID_DC if self.power_system == "DC" else ETA_GRID_AC
+
+    @property
+    def eta_rec_eff(self) -> float:
+        """(A) Efektywna sprawność rekuperacji, jedna liczba/system. regen=False => 0."""
+        if not self.regen:
+            return 0.0
+        return ETA_REC_EFF_DC if self.power_system == "DC" else ETA_REC_EFF_AC
 
     @property
     def U_grid(self) -> float:
@@ -305,7 +328,8 @@ class Parameters:
             f"  system         = {self.power_system}\n"
             f"  Δx_coast       = {self.dx_coast / 1000:.1f} km\n"
             f"  F_max          = {self.F_max / 1000:.1f} kN\n"
-            f"  v_breakpoint   = {self.v_breakpoint * 3.6:.1f} km/h\n"
+            f"  v_breakpoint   = {self.v_breakpoint * 3.6:.1f} km/h (v_1)\n"
+            f"  v_field_weak   = {self.v_field_weak * 3.6:.1f} km/h (v_2, osłabianie pola)\n"
             f"  η_tr (effective) = {self.eta_tr_effective:.2f} (system {self.power_system})\n"
             f"  η_rec          = {self.eta_rec:.2f}\n"
             f"  η_grid         = {self.eta_grid:.2f}\n"

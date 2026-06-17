@@ -85,7 +85,6 @@ def plot_indices_single_system(results: dict, save_dir: Path = OUTPUT_DIR) -> Pa
     S1 = [results["S1"][i] for i in order]
     ST = [results["ST"][i] for i in order]
 
-
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(len(labels))
     w = 0.4
@@ -156,14 +155,12 @@ def plot_comparison_AC_DC(
     ST_AC = results_AC["ST"]
     ST_DC = results_DC["ST"]
 
-
     # Sortowanie wg max(AC, DC) malejąco
     max_st = np.maximum(ST_AC, ST_DC)
     order = list(np.argsort(max_st)[::-1])
     labels = [PARAM_LABELS[names[i]] for i in order]
     ac = [ST_AC[i] for i in order]
     dc = [ST_DC[i] for i in order]
-
 
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(n)
