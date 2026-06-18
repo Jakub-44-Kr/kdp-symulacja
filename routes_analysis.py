@@ -59,6 +59,21 @@ LS = {"AC": "-", "DC": "--"}  # AC ciągła, DC przerywana (konwencja pracy)
 SYS_LABEL = {"AC": "2×25 kV", "DC": "3 kV"}
 SYSTEMS = ("AC", "DC")
 
+# Prędkość docelowa per system: AC 320 km/h, DC ograniczone do 250 km/h.
+# (zalecenie promotora — DC nie przekracza 250 km/h także na trasach).
+ROUTE_VMAX_KMH = {"AC": 320, "DC": 250}
+
+
+def _route_base(system, **changes):
+    """Parametry bazowe tras z prędkością docelową zależną od systemu
+    (AC 320 / DC 250 km/h). Jeśli `changes` zawiera v_max (przemiatanie),
+    wartość docelowa jest nadpisywana."""
+    return (
+        Parameters.base()
+        .with_changes(v_max=ROUTE_VMAX_KMH[system] / 3.6)
+        .with_changes(**changes)
+    )
+
 
 def _colors(values):
     """Mapa wartość→kolor z palety plasma (ucięta do 0.85 dla czytelności)."""
@@ -74,7 +89,13 @@ def _ref_times(param_name, value_si):
     """Czas przejazdu (min) na trasie odniesienia, osobno AC i DC."""
     t = {}
     for sysn in SYSTEMS:
-        p = Parameters.base().with_changes(**{param_name: value_si})
+        # DC nie przekracza 250 km/h także przy przemiataniu v_max
+        v_use = (
+            min(value_si, ROUTE_VMAX_KMH["DC"] / 3.6)
+            if (param_name == "v_max" and sysn == "DC")
+            else value_si
+        )
+        p = _route_base(sysn, **{param_name: v_use})
         t[sysn] = simulate_route(REF_ROUTE_FOR_TIMES, sysn, p_base=p)["metrics"][
             "T_total_min"
         ]
@@ -91,7 +112,7 @@ def _value_label(spec, v):
 #  KONFIGURACJA PRZEMIATAŃ
 # ───────────────────────────────────────────────────────────────────────────
 # WARIANT 1: dla każdego parametru — wartości, konwersja do SI, etykieta, tytuł.
-# Pozostałe parametry pozostają na wartości bazowej (v_max=320, m=600 t, P=12 MW).
+# Pozostałe parametry pozostają na wartości bazowej (v_max=320 km/h, m=600 t, P=12 MW).
 SWEEP_V1 = {
     "v_max": {
         "param": "v_max",
@@ -132,7 +153,7 @@ def route_cumulative_energy(route, system, **changes):
     Zwraca (x_km, E_cum_kWh) wzdłuż całej trasy. Na postoju doliczany jest
     pionowy skok energii potrzeb własnych (aux), spójnie z route.simulate_route.
     """
-    base = Parameters.base().with_changes(**changes)
+    base = _route_base(system, **changes)
     x_off, E_off, xs, Es = 0.0, 0.0, [], []
     for seg in route.segments:
         p = base.with_changes(
@@ -172,6 +193,9 @@ def plot_wariant1(param_name, save_dir=OUTPUT_DIR):
     for ax, route in zip(axes, ROUTES):
         for v in values:
             for sysn in SYSTEMS:
+                # DC: zalecenie ≤250 km/h — pomiń krzywe v_max>250 dla DC
+                if param_name == "v_max" and sysn == "DC" and v > ROUTE_VMAX_KMH["DC"]:
+                    continue
                 x, E = route_cumulative_energy(
                     route, sysn, **{param_name: spec["to_si"](v)}
                 )
@@ -224,7 +248,7 @@ def plot_wariant_velocity(param_name, save_dir=OUTPUT_DIR, decim=50):
     spec = SWEEP_V1[param_name]
     values = spec["values"]
     colors = _colors(values)
-    v_max_base = Parameters.base().v_max * 3.6
+    v_max_base = max(ROUTE_VMAX_KMH.values())  # górny zakres osi Y (AC 320)
 
     fig, axes = plt.subplots(3, 1, figsize=(8.5, 11), sharex=True)
     fig.subplots_adjust(top=0.82, hspace=0.24)
@@ -232,9 +256,7 @@ def plot_wariant_velocity(param_name, save_dir=OUTPUT_DIR, decim=50):
     for ax, route in zip(axes, ROUTES):
         for v in values:
             for sysn in SYSTEMS:
-                p_base = Parameters.base().with_changes(
-                    **{param_name: spec["to_si"](v)}
-                )
+                p_base = _route_base(sysn, **{param_name: spec["to_si"](v)})
                 r = simulate_route(route, sysn, p_base=p_base)
                 prof = r["profile"]
                 x = prof["x_m"].to_numpy()[::decim] / 1000.0
@@ -248,9 +270,13 @@ def plot_wariant_velocity(param_name, save_dir=OUTPUT_DIR, decim=50):
                     alpha=0.9,
                     rasterized=True,
                 )
-        ax.axhline(
-            v_max_base, color="gray", linestyle=":", linewidth=0.8, alpha=0.6, zorder=0
-        )
+        for vref, col in (
+            (ROUTE_VMAX_KMH["AC"], "#1f5fa6"),
+            (ROUTE_VMAX_KMH["DC"], "#c1121f"),
+        ):
+            ax.axhline(
+                vref, color=col, linestyle=":", linewidth=0.9, alpha=0.55, zorder=0
+            )
         ax.set_title(f"{route.name}   (postoje: {route.n_stops})", fontsize=11)
         ax.set_ylabel(r"Prędkość $v$ [km/h]")
         ax.set_xlim(0, 378)
@@ -296,48 +322,52 @@ def plot_wariant2_mass(save_dir=OUTPUT_DIR):
     colors = _colors(MASS_CLASSES_V2)
 
     fig, axes = plt.subplots(3, 1, figsize=(8.5, 11), sharex=True)
-    fig.subplots_adjust(top=0.85, hspace=0.22)
+    fig.subplots_adjust(top=0.80, hspace=0.22)
 
     for ax, route in zip(axes, ROUTES):
-        dc_reached_max = 0.0
         for m_t in MASS_CLASSES_V2:
-            for sysn in SYSTEMS:
-                ekm, vach = [], []
-                for vk in VMAX_AXIS_V2:
-                    p_base = Parameters.base().with_changes(
-                        v_max=vk / 3.6, m=m_t * 1000.0
-                    )
-                    r = simulate_route(route, sysn, p_base=p_base)
-                    ekm.append(r["metrics"]["E_per_km_kWh"])
-                    vach.append(max(s["v_max_reached_kmh"] for s in r["segments"]))
-                ax.plot(
-                    VMAX_AXIS_V2,
-                    ekm,
-                    color=colors[m_t],
-                    linestyle=LS[sysn],
-                    linewidth=1.4,
-                    marker="o",
-                    markersize=3,
-                    alpha=0.9,
-                )
-                if sysn == "DC":
-                    dc_reached_max = max(dc_reached_max, max(vach))
+            # AC: pełne przemiatanie v_max
+            ekm = []
+            for vk in VMAX_AXIS_V2:
+                p_base = Parameters.base().with_changes(v_max=vk / 3.6, m=m_t * 1000.0)
+                r = simulate_route(route, "AC", p_base=p_base)
+                ekm.append(r["metrics"]["E_per_km_kWh"])
+            ax.plot(
+                VMAX_AXIS_V2,
+                ekm,
+                color=colors[m_t],
+                linestyle=LS["AC"],
+                linewidth=1.4,
+                marker="o",
+                markersize=3,
+                alpha=0.9,
+            )
+            # DC: zalecenie promotora <=250 km/h - pojedynczy punkt pracy (marker)
+            vk_dc = ROUTE_VMAX_KMH["DC"]
+            p_dc = Parameters.base().with_changes(v_max=vk_dc / 3.6, m=m_t * 1000.0)
+            r_dc = simulate_route(route, "DC", p_base=p_dc)
+            ax.plot(
+                [vk_dc],
+                [r_dc["metrics"]["E_per_km_kWh"]],
+                color=colors[m_t],
+                marker="s",
+                markersize=8,
+                linestyle="None",
+                markeredgecolor="black",
+                markeredgewidth=0.6,
+                zorder=4,
+            )
         ax.set_title(f"{route.name}   (postoje: {route.n_stops})", fontsize=11)
         ax.set_ylabel(r"$E_{pant}$/km [kWh/km]")
-        # realny sufit DC: pionowa linia + etykieta (DC nie przekracza ~325 km/h)
-        ax.axvspan(dc_reached_max, VMAX_AXIS_V2[-1], color="gray", alpha=0.06, zorder=0)
+        # granica zalecenia DC (250 km/h): powyżej - zakres tylko dla AC
+        dc_cap = ROUTE_VMAX_KMH["DC"]
         ax.axvline(
-            dc_reached_max,
-            color="dimgray",
-            linestyle=":",
-            linewidth=1.0,
-            alpha=0.7,
-            zorder=1,
+            dc_cap, color="dimgray", linestyle=":", linewidth=1.0, alpha=0.7, zorder=1
         )
         ax.text(
-            dc_reached_max - 3,
+            dc_cap - 3,
             ax.get_ylim()[1],
-            f"DC: realne $v_{{max}}\\!\\approx${dc_reached_max:.0f} km/h",
+            "DC: zalecenie ≤250 km/h (marker)",
             fontsize=8,
             color="dimgray",
             ha="right",
@@ -345,9 +375,9 @@ def plot_wariant2_mass(save_dir=OUTPUT_DIR):
             rotation=90,
         )
         ax.text(
-            (dc_reached_max + VMAX_AXIS_V2[-1]) / 2,
+            (dc_cap + VMAX_AXIS_V2[-1]) / 2,
             ax.get_ylim()[0],
-            "zadane > osiągalne\ndla DC",
+            "zakres tylko dla AC",
             fontsize=7.5,
             color="gray",
             ha="center",
@@ -364,9 +394,24 @@ def plot_wariant2_mass(save_dir=OUTPUT_DIR):
     ]
     leg_s = [
         Line2D(
-            [0], [0], color="dimgray", ls=LS[s], lw=2.2, label=f"{s} ({SYS_LABEL[s]})"
-        )
-        for s in SYSTEMS
+            [0],
+            [0],
+            color="dimgray",
+            ls=LS["AC"],
+            lw=2.2,
+            label=f"AC ({SYS_LABEL['AC']}) - przemiatanie",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="dimgray",
+            marker="s",
+            ms=7,
+            ls="None",
+            markeredgecolor="black",
+            markeredgewidth=0.5,
+            label=f"DC ({SYS_LABEL['DC']}) - punkt 250 km/h",
+        ),
     ]
     fig.legend(
         handles=leg_m + leg_s,
@@ -397,7 +442,7 @@ def analyze_cost_of_stops(save_dir=OUTPUT_DIR):
     rows = []
     for route in ROUTES:
         for sysn in SYSTEMS:
-            r = simulate_route(route, sysn)
+            r = simulate_route(route, sysn, p_base=_route_base(sysn))
             m = r["metrics"]
             rows.append(
                 {
@@ -505,7 +550,13 @@ def run_oat_sweep_per_route(save_dir=OUTPUT_DIR):
         for sysn in SYSTEMS:
             for pname, spec in SWEEP_RANGES_ROUTE.items():
                 for val in _sweep_values(spec, sysn):
-                    p_base = Parameters.base().with_changes(**{pname: val})
+                    if (
+                        pname == "v_max"
+                        and sysn == "DC"
+                        and val > ROUTE_VMAX_KMH["DC"] / 3.6
+                    ):
+                        continue
+                    p_base = _route_base(sysn, **{pname: val})
                     r = simulate_route(route, sysn, p_base=p_base)
                     m = r["metrics"]
                     seg_reached = all(s["reached_v_set"] for s in r["segments"])
@@ -648,7 +699,7 @@ OAT_DELTA = 0.10  # ±10 % — spójnie z sensitivity.py (analiza bazowa)
 
 
 def _ekm(route, system, **changes):
-    p = Parameters.base().with_changes(**changes)
+    p = _route_base(system, **changes)
     return simulate_route(route, system, p_base=p)["metrics"]["E_per_km_kWh"]
 
 
@@ -658,7 +709,8 @@ def run_oat_per_route(save_dir=OUTPUT_DIR):
         for sysn in SYSTEMS:
             E0 = _ekm(route, sysn)
             for pname, spec in OAT_PARAMS.items():
-                p0 = spec["base"]
+                # baza v_max zależna od systemu (AC 320 / DC 250 km/h)
+                p0 = (ROUTE_VMAX_KMH[sysn] / 3.6) if pname == "v_max" else spec["base"]
                 Ep = _ekm(route, sysn, **{pname: p0 * (1 + OAT_DELTA)})
                 Em = _ekm(route, sysn, **{pname: p0 * (1 - OAT_DELTA)})
                 s_plus = (Ep - E0) / E0 / OAT_DELTA

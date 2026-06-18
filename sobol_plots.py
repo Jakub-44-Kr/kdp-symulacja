@@ -19,6 +19,7 @@ Autor: Jakub Król, PW WE, 2026
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -200,6 +201,74 @@ def plot_comparison_AC_DC(
     ax.legend(loc="upper right", framealpha=0.95)
 
     path = save_dir / "sobol_comparison_AC_vs_DC.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  WYKRES 3: Wpływ rekuperacji — z vs bez (jeden system, dwa panele S_i / S_Ti)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def plot_z_vs_bez(
+    results_z: dict, results_bez: dict, save_dir: Path = OUTPUT_DIR
+) -> Path:
+    """
+    Porownanie indeksow Sobola: wariant z rekuperacja vs bez rekuperacji,
+    dla jednego systemu. Dwa panele: S_i (pierwszego rzedu) oraz S_Ti (calkowity).
+    Sluzy do pokazania, ze rekuperacja praktycznie nie zmienia rankingu czynnikow.
+    """
+    system = results_z["system"]
+    names = results_z["names"]
+    order = _sort_by_ST(results_z)
+    labels = [PARAM_LABELS[names[i]] for i in order]
+    x = np.arange(len(labels))
+    w = 0.4
+    C_Z, C_BEZ = "#1f5fa6", "#9ecae1"  # z = ciemny, bez = jasny
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, key, ttl in (
+        (ax1, "S1", "Indeks pierwszego rzędu $S_i$"),
+        (ax2, "ST", "Indeks całkowity $S_{Ti}$"),
+    ):
+        z = [results_z[key][i] for i in order]
+        b = [results_bez[key][i] for i in order]
+        ax.bar(
+            x - w / 2,
+            z,
+            w,
+            color=C_Z,
+            edgecolor="black",
+            linewidth=0.8,
+            label="z rekuperacją",
+            alpha=0.95,
+        )
+        ax.bar(
+            x + w / 2,
+            b,
+            w,
+            color=C_BEZ,
+            edgecolor="black",
+            linewidth=0.8,
+            label="bez rekuperacji",
+            alpha=0.95,
+        )
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=12)
+        ax.set_ylabel("Indeks Sobola")
+        ax.set_title(ttl)
+        top = max(max(z), max(b))
+        ax.set_ylim(0, top * 1.18 if top > 0 else 0.1)
+        ax.axhline(0, color="black", linewidth=0.5)
+        ax.legend(loc="upper right", framealpha=0.95)
+
+    fig.suptitle(
+        f"Wpływ rekuperacji na indeksy Sobola — system {system}  (N={results_z['N']})",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    path = save_dir / f"sobol_z_vs_bez_{system}.png"
     fig.savefig(path)
     plt.close(fig)
     return path
@@ -390,30 +459,38 @@ def make_all_plots(
 
 if __name__ == "__main__":
     n_cpu = os.cpu_count() or 4
-    N_FINAL = 2048
+    # N z linii poleceń: `python sobol_plots.py 1024` (domyślnie 1024).
+    # UWAGA: liczone są DWA warianty (z/bez) × 2 systemy = 4 przebiegi Sobola.
+    N_FINAL = int(sys.argv[1]) if len(sys.argv) > 1 else 1024
 
     print("=" * 78)
-    print("FINALNE WYKRESY SOBOLA — produkcja do rozdziału 7")
-    print(f"  N={N_FINAL}, procesory: {n_cpu - 1}")
+    print("FINALNE WYKRESY SOBOLA — rozdział 7 (warianty: z / bez rekuperacji)")
+    print(f"  N={N_FINAL}, procesory: {max(1, n_cpu - 1)}")
     print("=" * 78)
     print()
 
     t0 = time.perf_counter()
 
-    # Świeży run dla obu systemów przy N_FINAL
-    print(">>> Symulacja Sobola dla system AC...")
-    results_AC = run_sobol_for_system("AC", N=N_FINAL)
-    print(">>> Symulacja Sobola dla system DC...")
-    results_DC = run_sobol_for_system("DC", N=N_FINAL)
+    # Świeży run dla obu systemów i obu wariantów przy N_FINAL
+    results = {}
+    for system in ("AC", "DC"):
+        print(f">>> Sobol {system} — z rekuperacją...")
+        rz = run_sobol_for_system(system, N=N_FINAL, regen=True)
+        print(f">>> Sobol {system} — bez rekuperacji...")
+        rb = run_sobol_for_system(system, N=N_FINAL, regen=False)
+        export_sobol_indices(rz, suffix="")
+        export_sobol_indices(rb, suffix="_bez")
+        results[system] = (rz, rb)
 
-    # Eksport CSV (nadpisuje poprzednie z N=256)
-    print("\n>>> Eksport CSV...")
-    export_sobol_indices(results_AC)
-    export_sobol_indices(results_DC)
+    results_AC = results["AC"][0]
+    results_DC = results["DC"][0]
 
-    # Wykresy
-    print(">>> Generuję wykresy...")
+    # Wykresy: standardowy zestaw (na wariancie "z") + porównanie z/bez per system
+    print("\n>>> Generuję wykresy...")
     paths = make_all_plots(results_AC, results_DC)
+    for system in ("AC", "DC"):
+        rz, rb = results[system]
+        paths.append(plot_z_vs_bez(rz, rb))
 
     print()
     print("=" * 78)

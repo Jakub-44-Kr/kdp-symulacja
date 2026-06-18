@@ -79,6 +79,7 @@ PARAM_SWEEPS = {
         "label": "Wpływ prędkości eksploatacyjnej $v_{max}$",
         "fmt": lambda v: f"{v * 3.6:.0f} km/h",
         "param_name": "$v_{max}$",
+        "cap_si": {"DC": 250 / 3.6},  # DC: sztywny sufit 250 km/h (A)
         "to_x": lambda v: v * 3.6,  # SI (m/s) -> km/h na osi X
         "xlabel": "Prędkość eksploatacyjna $v_{max}$ [km/h]",
     },
@@ -112,6 +113,14 @@ PARAM_SWEEPS = {
 
 # Długości tras dla paneli 4×2 (8 paneli)
 TRACK_LENGTHS_KM = [50, 100, 150, 200, 250, 300, 350, 400]
+
+# Długości tras dla paneli profili prędkości (jedna kolumna na całą stronę)
+VELOCITY_PANEL_LENGTHS = [50, 150, 250]
+
+# Panele profili prędkości: 3 prędkości zadane (zamiast 3 długości)
+SPEED_PANELS_KMH = [250, 300, 350]
+VELOCITY_PANEL_L_KM = 100  # stała długość odcinka dla profili [km]
+DC_VELOCITY_CAP_KMH = 250  # DC <= 250 km/h (zalecenie promotora)
 
 # Systemy zasilania
 SYSTEMS = ("AC", "DC")
@@ -176,6 +185,36 @@ def _run_all_tasks(tasks: list[dict], n_workers: int | None = None) -> list[dict
     return results
 
 
+def _vel_worker(task: dict) -> dict:
+    """Worker profili prędkości: ustawia v_max = prędkość panelu ORAZ wartość parametru."""
+    changes = {
+        "power_system": task["system"],
+        "L": VELOCITY_PANEL_L_KM * 1000.0,
+        "v_max": task["v_panel_kmh"] / 3.6,
+    }
+    if task["param_name"] != "v_max":
+        changes[task["param_name"]] = task["value_SI"]
+    p = Parameters.base().with_changes(**changes)
+    sim = run_simulation(p, [(0.0, p.L, p.gradient)])
+    return {
+        "param_name": task["param_name"],
+        "value_SI": task["value_SI"],
+        "v_panel_kmh": task["v_panel_kmh"],
+        "system": task["system"],
+        "x": sim.x,
+        "v_ms": sim.v,
+        "T_total_s": float(sim.t[-1]),
+    }
+
+
+def _run_vel_tasks(tasks: list[dict], n_workers: int | None = None) -> list[dict]:
+    """Jak _run_all_tasks, ale dla profili prędkości (_vel_worker)."""
+    if n_workers is None:
+        n_workers = max(1, (os.cpu_count() or 4) - 1)
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        return list(executor.map(_vel_worker, tasks, chunksize=4))
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  WYKRES 4×2: pojedynczy parametr × 8 długości
 # ═══════════════════════════════════════════════════════════════════════════
@@ -200,35 +239,32 @@ def plot_param_influence(
     param_name: str,
     results: list[dict],
     save_dir: Path = OUTPUT_DIR,
+    metric: str = "E_per_km_kWh",
+    ylabel: str = "Jednostkowe zużycie energii $E_{pant,netto}/L$ [kWh/km]",
+    fname_suffix: str = "",
 ) -> Path:
     """
-    Charakterystyka wpływu parametru na jednostkowe zużycie energii E/km.
+    Charakterystyka wpływu parametru na jednostkowe zużycie energii.
 
-    Jedna strona = dwa panele (AC | DC). Na każdym panelu:
-      - oś X: wartość badanego parametru (jednostki wyświetlane),
-      - oś Y: jednostkowe zużycie energii netto E_pant,netto/L [kWh/km],
-      - jedna krzywa na długość odcinka z TRACK_LENGTHS_KM (kolor = L).
-
-    To zależność f(parametr), a nie profil wzdłuż trasy: każdy punkt krzywej
-    to KOŃCOWE E_per_km całego przejazdu — ta sama metryka, co w analizie
-    OAT i Sobola. Spadek krzywych wraz z rosnącym L pokazuje amortyzację
-    energii rozpędzania/hamowania na dłuższym dystansie.
+    JEDEN panel: AC (linia ciągła) i DC (linia przerywana) razem; kolor = długość L.
+    Każdy punkt to końcowe E całego przejazdu (ta sama metryka, co OAT/Sobol).
+    metric: "E_per_km_kWh" (kWh/km) albo "E_per_btkm_Wh" (Wh/(bt*km)) — bliźniak.
     """
+    from matplotlib.lines import Line2D
+
     spec = PARAM_SWEEPS[param_name]
     cmap = plt.get_cmap(CMAP_NAME)
     n_L = len(TRACK_LENGTHS_KM)
     L_colors = {L: cmap(i / max(1, n_L - 1)) for i, L in enumerate(TRACK_LENGTHS_KM)}
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2), sharey=True)
-    sys_axes = {"AC": axes[0], "DC": axes[1]}
-    sys_titles = {"AC": "2×25 kV AC", "DC": "3 kV DC"}
+    fig, ax = plt.subplots(figsize=(10, 6))
 
     for system in SYSTEMS:
-        ax = sys_axes[system]
+        ls = LINESTYLE_AC if system == "AC" else LINESTYLE_DC
         for L_km in TRACK_LENGTHS_KM:
             L_m = L_km * 1000.0
             pts = [
-                (r["value_SI"], r["E_per_km_kWh"])
+                (r["value_SI"], r[metric])
                 for r in results
                 if r["system"] == system and r["L_m"] == L_m
             ]
@@ -245,28 +281,34 @@ def plot_param_influence(
                 marker="o",
                 markersize=4,
                 linewidth=1.6 if multi else 0,
-                linestyle="-" if multi else "None",
+                linestyle=ls if multi else "None",
             )
-        ax.set_title(sys_titles[system])
-        ax.set_xlabel(spec["xlabel"])
 
-    sys_axes["AC"].set_ylabel("Jednostkowe zużycie energii $E_{pant,netto}/L$ [kWh/km]")
+    ax.set_xlabel(spec["xlabel"])
+    ax.set_ylabel(ylabel)
 
-    # Adnotacja sufitu mocy DC przy przemiataniu mocy (DC = pojedynczy punkt)
     if param_name == "P_nom":
-        sys_axes["DC"].text(
+        ax.text(
             0.5,
             0.04,
-            "sufit trakcji 9 MW",
-            transform=sys_axes["DC"].transAxes,
+            "DC: sufit trakcji 9 MW",
+            transform=ax.transAxes,
             ha="center",
             fontsize=8,
             style="italic",
             color="0.4",
         )
-
-    # Wspólna legenda długości odcinka (kolor = L)
-    from matplotlib.lines import Line2D
+    if param_name == "v_max":
+        ax.text(
+            0.5,
+            0.04,
+            "DC: sufit 250 km/h",
+            transform=ax.transAxes,
+            ha="center",
+            fontsize=8,
+            style="italic",
+            color="0.4",
+        )
 
     L_handles = [
         Line2D(
@@ -280,21 +322,47 @@ def plot_param_influence(
         )
         for L in TRACK_LENGTHS_KM
     ]
-    fig.legend(
+    leg1 = ax.legend(
         handles=L_handles,
-        loc="center right",
-        bbox_to_anchor=(1.0, 0.5),
         title="Długość odcinka $L$",
-        frameon=True,
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.65),
         framealpha=0.95,
-        fontsize=9,
+        fontsize=8,
+    )
+    ax.add_artist(leg1)
+    sys_handles = [
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            linestyle=LINESTYLE_AC,
+            linewidth=1.6,
+            label="AC (2×25 kV)",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            linestyle=LINESTYLE_DC,
+            linewidth=1.6,
+            label="DC (3 kV)",
+        ),
+    ]
+    ax.legend(
+        handles=sys_handles,
+        title="System zasilania",
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.22),
+        framealpha=0.95,
+        fontsize=8,
     )
 
-    fig.suptitle(spec["label"], fontsize=14, y=1.02, fontweight="bold")
-    fig.tight_layout(rect=(0.0, 0.0, 0.87, 0.96))
+    fig.suptitle(spec["label"], fontsize=14, y=1.00, fontweight="bold")
+    fig.tight_layout(rect=(0.0, 0.0, 0.80, 0.97))
 
     safe_name = param_name.replace("_", "")
-    path = save_dir / f"influence_{safe_name}.png"
+    path = save_dir / f"influence_{safe_name}{fname_suffix}.png"
     fig.savefig(path)
     plt.close(fig)
     return path
@@ -307,84 +375,80 @@ def plot_param_influence(
 
 def plot_param_influence_velocity(
     param_name: str,
-    results: list[dict],
+    vel_results: list[dict],
     save_dir: Path = OUTPUT_DIR,
 ) -> Path:
     """
-    Generuje stronę 4×2 paneli z profilami prędkości v(x) dla wpływu jednego parametru.
+    Profile prędkości v(x) dla wpływu parametru.
 
-    Identyczna struktura jak plot_param_influence, ale na osi Y prędkość v [km/h]
-    zamiast energii kumulowanej.
+    JEDNA KOLUMNA: panele = prędkości zadane 250/300/350 km/h (SPEED_PANELS_KMH)
+    przy stałej długości L = VELOCITY_PANEL_L_KM km. AC ciągła, DC przerywana.
+    DC tylko do 250 km/h (zalecenie promotora) — w panelach 300/350 sam AC.
+    Dla param=v_max panel pokazuje sam profil (prędkość zadana = panel).
     """
-    spec = PARAM_SWEEPS[param_name]
-    values = spec["values"]
-    n_values = len(values)
-    cmap = plt.get_cmap(CMAP_NAME)
-    colors = [cmap(i / max(1, n_values - 1)) for i in range(n_values)]
-
-    fig, axes = plt.subplots(4, 2, figsize=(11, 13), sharey=False)
-    axes_flat = axes.flatten()
-
-    # Grupowanie wyników po L_m
-    by_L = {}
-    for r in results:
-        L_m = r["L_m"]
-        by_L.setdefault(L_m, []).append(r)
-
-    for panel_idx, L_km in enumerate(TRACK_LENGTHS_KM):
-        ax = axes_flat[panel_idx]
-        L_m = L_km * 1000.0
-        panel_results = by_L.get(L_m, [])
-        by_key = {(r["value_SI"], r["system"]): r for r in panel_results}
-
-        # Najpierw DC (przerywane, na spodzie), potem AC (ciągłe, na wierzchu)
-        # + lekka przezroczystość żeby było widać pokrywające się krzywe DC
-        for v_idx, value_SI in enumerate(values):
-            color = colors[v_idx]
-            r_dc = by_key.get((value_SI, "DC"))
-            if r_dc is not None:
-                ax.plot(
-                    r_dc["x"] / 1000.0,
-                    r_dc["v_ms"] * 3.6,
-                    color=color,
-                    linestyle=LINESTYLE_DC,
-                    linewidth=1.8,
-                    alpha=0.7,
-                )
-        for v_idx, value_SI in enumerate(values):
-            color = colors[v_idx]
-            r_ac = by_key.get((value_SI, "AC"))
-            if r_ac is not None:
-                ax.plot(
-                    r_ac["x"] / 1000.0,
-                    r_ac["v_ms"] * 3.6,
-                    color=color,
-                    linestyle=LINESTYLE_AC,
-                    linewidth=1.4,
-                )
-
-        ax.set_xlim(0, L_km)
-        ax.set_ylim(bottom=0)
-        ax.set_xlabel("Pozycja $x$ [km]")
-        ax.set_ylabel("Prędkość $v$ [km/h]")
-        ax.set_title(f"L = {L_km} km")
-
-    # Legenda - identyczna jak w plot_param_influence
-    legend_handles = []
-    legend_labels = []
-    L_ref = TRACK_LENGTHS_KM[3] * 1000.0
-    panel_ref = by_L.get(L_ref, [])
-    by_key_ref = {(r["value_SI"], r["system"]): r for r in panel_ref}
-
     from matplotlib.lines import Line2D
 
-    for v_idx, value_SI in enumerate(values):
-        color = colors[v_idx]
-        T_AC = by_key_ref.get((value_SI, "AC"), {}).get("T_total_s", 0)
-        T_DC = by_key_ref.get((value_SI, "DC"), {}).get("T_total_s", 0)
-        label = _format_legend_entry(value_SI, T_AC, T_DC, param_name)
-        legend_handles.append(Line2D([0], [0], color=color, linewidth=2))
-        legend_labels.append(label)
+    spec = PARAM_SWEEPS[param_name]
+    is_vmax = param_name == "v_max"
+    values = spec["values"]
+    cmap = plt.get_cmap(CMAP_NAME)
+    colors = [cmap(i / max(1, len(values) - 1)) for i in range(len(values))]
+
+    panels = SPEED_PANELS_KMH
+    fig, axes = plt.subplots(len(panels), 1, figsize=(8.5, 12.5), sharey=True)
+    if len(panels) == 1:
+        axes = [axes]
+
+    by_panel = {}
+    for r in vel_results:
+        by_panel.setdefault(r["v_panel_kmh"], []).append(r)
+
+    for panel_idx, v_panel in enumerate(panels):
+        ax = axes[panel_idx]
+        rows = by_panel.get(v_panel, [])
+        if is_vmax:
+            for system, col, ls, lw in (
+                ("DC", "#c1121f", LINESTYLE_DC, 1.9),
+                ("AC", "#1f5fa6", LINESTYLE_AC, 1.6),
+            ):
+                rr = next((r for r in rows if r["system"] == system), None)
+                if rr is not None:
+                    ax.plot(
+                        rr["x"] / 1000.0,
+                        rr["v_ms"] * 3.6,
+                        color=col,
+                        linestyle=ls,
+                        linewidth=lw,
+                    )
+        else:
+            by_key = {(r["value_SI"], r["system"]): r for r in rows}
+            for v_idx, val in enumerate(values):
+                rdc = by_key.get((val, "DC"))
+                if rdc is not None:
+                    ax.plot(
+                        rdc["x"] / 1000.0,
+                        rdc["v_ms"] * 3.6,
+                        color=colors[v_idx],
+                        linestyle=LINESTYLE_DC,
+                        linewidth=1.8,
+                        alpha=0.75,
+                    )
+            for v_idx, val in enumerate(values):
+                rac = by_key.get((val, "AC"))
+                if rac is not None:
+                    ax.plot(
+                        rac["x"] / 1000.0,
+                        rac["v_ms"] * 3.6,
+                        color=colors[v_idx],
+                        linestyle=LINESTYLE_AC,
+                        linewidth=1.4,
+                    )
+        ax.set_xlim(0, VELOCITY_PANEL_L_KM)
+        ax.set_ylim(0, max(panels) * 1.06)
+        ax.set_xlabel("Pozycja $x$ [km]")
+        ax.set_ylabel("Prędkość $v$ [km/h]")
+        note = "" if v_panel <= DC_VELOCITY_CAP_KMH else "  (tylko AC — DC ≤ 250 km/h)"
+        ax.set_title(f"$v_{{zad}}$ = {v_panel} km/h{note}")
 
     sys_handles = [
         Line2D(
@@ -392,7 +456,7 @@ def plot_param_influence_velocity(
             [0],
             color="black",
             linestyle=LINESTYLE_AC,
-            linewidth=1.5,
+            linewidth=1.6,
             label="AC (2×25 kV)",
         ),
         Line2D(
@@ -400,35 +464,72 @@ def plot_param_influence_velocity(
             [0],
             color="black",
             linestyle=LINESTYLE_DC,
-            linewidth=1.5,
-            label="DC (3 kV)",
+            linewidth=1.6,
+            label="DC (3 kV, ≤ 250 km/h)",
         ),
     ]
-
-    fig.legend(
-        legend_handles,
-        legend_labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.00),
-        ncol=3,
-        title=spec["param_name"],
-        frameon=True,
-        framealpha=0.95,
-        fontsize=8,
-    )
-    fig.legend(
-        handles=sys_handles,
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.01),
-        ncol=2,
-        title="System zasilania",
-        frameon=True,
-        framealpha=0.95,
-    )
+    if is_vmax:
+        sys_handles = [
+            Line2D(
+                [0],
+                [0],
+                color="#1f5fa6",
+                linestyle=LINESTYLE_AC,
+                linewidth=1.8,
+                label="AC (2×25 kV)",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#c1121f",
+                linestyle=LINESTYLE_DC,
+                linewidth=1.8,
+                label="DC (3 kV, ≤ 250 km/h)",
+            ),
+        ]
+        fig.legend(
+            handles=sys_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=2,
+            title="System zasilania",
+            frameon=True,
+            framealpha=0.95,
+        )
+    else:
+        val_handles = [
+            Line2D([0], [0], color=colors[i], linewidth=2) for i in range(len(values))
+        ]
+        val_labels = [spec["fmt"](v) for v in values]
+        fig.legend(
+            val_handles,
+            val_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=min(len(values), 6),
+            title=spec["param_name"],
+            frameon=True,
+            framealpha=0.95,
+            fontsize=8,
+        )
+        fig.legend(
+            handles=sys_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.01),
+            ncol=2,
+            title="System zasilania",
+            frameon=True,
+            framealpha=0.95,
+        )
 
     title_velocity = spec["label"].replace("Wpływ", "Profile prędkości — wpływ")
-    fig.suptitle(title_velocity, fontsize=14, y=1.04, fontweight="bold")
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.97))
+    fig.suptitle(
+        f"{title_velocity}  (L = {VELOCITY_PANEL_L_KM} km)",
+        fontsize=14,
+        y=1.045,
+        fontweight="bold",
+    )
+    fig.tight_layout(rect=(0.0, 0.025, 1.0, 0.95))
 
     safe_name = param_name.replace("_", "")
     path = save_dir / f"influence_velocity_{safe_name}.png"
@@ -443,52 +544,56 @@ def plot_param_influence_velocity(
 
 
 def plot_length_influence(
-    save_dir: Path = OUTPUT_DIR, n_workers: int | None = None
-) -> Path:
+    save_dir: Path = OUTPUT_DIR,
+    n_workers: int | None = None,
+    results: list[dict] | None = None,
+    metric: str = "E_per_km_kWh",
+    ylabel: str = "Jednostkowe zużycie energii $E_{pant,netto}/L$ [kWh/km]",
+    fname_suffix: str = "",
+) -> tuple[Path, list[dict]]:
     """
-    Pojedynczy wykres: jednostkowe zużycie E_per_km [kWh/km] vs L,
-    dla 5-6 prędkości × 2 systemy. Pokazuje spadek zużycia jednostkowego
-    z długością odcinka (amortyzacja energii rozpędzania/hamowania) —
-    w przeciwieństwie do energii całkowitej, która z L rośnie ~liniowo.
+    E_per_km vs L dla kilku prędkości × 2 systemy. DC ograniczone do sufitu 250 km/h.
+
+    Zwraca (ścieżka, wyniki) — wyniki można podać ponownie (arg `results`), by
+    narysować bliźniaczy wykres w innej metryce bez powtarzania symulacji.
     """
-    # Sweep parametrów
     velocities_kmh = (250, 280, 310, 340, 370, 400)
-    lengths_km = list(range(50, 401, 25))  # 50, 75, ..., 400 km (15 punktów)
+    DC_CAP_KMH = 250
+    lengths_km = list(range(50, 401, 25))
 
-    tasks = []
-    for v_kmh in velocities_kmh:
-        for L_km in lengths_km:
-            for system in SYSTEMS:
-                tasks.append(
-                    {
-                        "param_name": "v_max",
-                        "value_SI": v_kmh / 3.6,
-                        "L_m": L_km * 1000.0,
-                        "system": system,
-                    }
-                )
+    if results is None:
+        tasks = []
+        for v_kmh in velocities_kmh:
+            for L_km in lengths_km:
+                for system in SYSTEMS:
+                    if system == "DC" and v_kmh > DC_CAP_KMH:
+                        continue
+                    tasks.append(
+                        {
+                            "param_name": "v_max",
+                            "value_SI": v_kmh / 3.6,
+                            "L_m": L_km * 1000.0,
+                            "system": system,
+                        }
+                    )
+        t0 = time.perf_counter()
+        print("  >>> Sweep L (E/km vs L)...")
+        results = _run_all_tasks(tasks, n_workers)
+        print(f"    {len(tasks)} przejazdów w {time.perf_counter() - t0:.1f} s")
 
-    t0 = time.perf_counter()
-    print("  >>> Sweep L (E/km vs L)...")
-    results = _run_all_tasks(tasks, n_workers)
-    print(f"    {len(tasks)} przejazdów w {time.perf_counter() - t0:.1f} s")
-
-    # Rysowanie
     cmap = plt.get_cmap(CMAP_NAME)
     colors = [
         cmap(i / max(1, len(velocities_kmh) - 1)) for i in range(len(velocities_kmh))
     ]
 
     fig, ax = plt.subplots(figsize=(10, 6))
-
     for v_idx, v_kmh in enumerate(velocities_kmh):
-        color = colors[v_idx]
         for system in SYSTEMS:
+            if system == "DC" and v_kmh > DC_CAP_KMH:
+                continue
             linestyle = LINESTYLE_AC if system == "AC" else LINESTYLE_DC
-            xs = []
-            ys = []
+            xs, ys = [], []
             for L_km in lengths_km:
-                # znajdź wynik dla (v_kmh, L_km, system)
                 v_SI = v_kmh / 3.6
                 L_m = L_km * 1000.0
                 for r in results:
@@ -498,12 +603,12 @@ def plot_length_influence(
                         and r["system"] == system
                     ):
                         xs.append(L_km)
-                        ys.append(r["E_per_km_kWh"])
+                        ys.append(r[metric])
                         break
             ax.plot(
                 xs,
                 ys,
-                color=color,
+                color=colors[v_idx],
                 linestyle=linestyle,
                 linewidth=1.6,
                 marker="o",
@@ -512,9 +617,7 @@ def plot_length_influence(
             )
 
     ax.set_xlabel("Długość odcinka $L$ [km]", fontsize=11)
-    ax.set_ylabel(
-        "Jednostkowe zużycie energii $E_{pant,netto}/L$ [kWh/km]", fontsize=11
-    )
+    ax.set_ylabel(ylabel, fontsize=11)
     ax.set_title(
         "Wpływ długości odcinka na jednostkowe zużycie energii\n"
         "dla różnych prędkości eksploatacyjnych i systemów zasilania",
@@ -522,12 +625,11 @@ def plot_length_influence(
     )
     ax.legend(loc="upper right", ncol=2, framealpha=0.95, fontsize=9)
     ax.set_xlim(0, max(lengths_km) * 1.02)
-    # oś Y autoskalowana — wartości ~22-32 kWh/km, wymuszanie 0 spłaszczyłoby zakres
 
-    path = save_dir / "influence_length.png"
+    path = save_dir / f"influence_length{fname_suffix}.png"
     fig.savefig(path)
     plt.close(fig)
-    return path
+    return path, results
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -539,24 +641,20 @@ def run_all_param_influence_plots(
     save_dir: Path = OUTPUT_DIR, n_workers: int | None = None
 ) -> list[Path]:
     """
-    Główna funkcja: dla każdego z 4 parametrów generuje stronę 4×2 paneli,
-    plus dodatkowy wykres wpływu długości.
-
-    Returns:
-        Lista ścieżek do wygenerowanych plików.
+    Dla kazdego parametru: wykres E/km (AC+DC na jednym), jego blizniak Wh/(bt*km)
+    oraz profile predkosci (kolumna 50/150/250 km). Plus wplyw dlugosci (E/km + blizniak).
     """
     save_dir.mkdir(parents=True, exist_ok=True)
     paths = []
+    BTKM_YLABEL = "Jednostkowe zużycie energii [Wh/(bt·km)]"
 
-    # 1-4: cztery podrozdziały po 8 paneli każdy (energia + prędkość)
     for param_name, spec in PARAM_SWEEPS.items():
-        print(f"\n>>> Podrozdział: {spec['label']}")
+        print(f"\n>>> Podrozdzial: {spec['label']}")
         tasks = []
         cap = spec.get("cap_si", {})
         for value_SI in spec["values"]:
             for L_km in TRACK_LENGTHS_KM:
                 for system in SYSTEMS:
-                    # pomiń wartości powyżej sufitu danego systemu (np. moc DC > 6 MW)
                     if system in cap and value_SI > cap[system] + 1.0:
                         continue
                     tasks.append(
@@ -571,22 +669,60 @@ def run_all_param_influence_plots(
         t0 = time.perf_counter()
         results = _run_all_tasks(tasks, n_workers)
 
-        # Dwa wykresy z tego samego zestawu symulacji
-        print("    rysowanie wykresu energii...")
-        path_E = plot_param_influence(param_name, results, save_dir)
-        paths.append(path_E)
-        print(f"    {path_E.name}")
+        print("    wykres energii (kWh/km) + blizniak (Wh/bt km)...")
+        paths.append(plot_param_influence(param_name, results, save_dir))
+        paths.append(
+            plot_param_influence(
+                param_name,
+                results,
+                save_dir,
+                metric="E_per_btkm_Wh",
+                ylabel=BTKM_YLABEL,
+                fname_suffix="_btkm",
+            )
+        )
 
-        print("    rysowanie wykresu prędkości...")
-        path_v = plot_param_influence_velocity(param_name, results, save_dir)
-        paths.append(path_v)
-        print(f"    {path_v.name}  (łącznie {time.perf_counter() - t0:.1f} s)")
+        print("    profile predkosci (panele 250/300/350 km/h, DC <=250)...")
+        vel_tasks = []
+        for v_panel in SPEED_PANELS_KMH:
+            for system in SYSTEMS:
+                if system == "DC" and v_panel > DC_VELOCITY_CAP_KMH:
+                    continue
+                if param_name == "v_max":
+                    vel_tasks.append(
+                        {
+                            "param_name": "v_max",
+                            "value_SI": v_panel / 3.6,
+                            "v_panel_kmh": v_panel,
+                            "system": system,
+                        }
+                    )
+                else:
+                    for value_SI in spec["values"]:
+                        vel_tasks.append(
+                            {
+                                "param_name": param_name,
+                                "value_SI": value_SI,
+                                "v_panel_kmh": v_panel,
+                                "system": system,
+                            }
+                        )
+        vel_results = _run_vel_tasks(vel_tasks, n_workers)
+        paths.append(plot_param_influence_velocity(param_name, vel_results, save_dir))
+        print(f"    (lacznie {time.perf_counter() - t0:.1f} s)")
 
-    # 5: wpływ długości (osobny, prostszy wykres)
-    print("\n>>> Podrozdział: Wpływ długości odcinka")
-    path = plot_length_influence(save_dir, n_workers)
-    paths.append(path)
-    print(f"    {path.name}")
+    print("\n>>> Podrozdzial: Wplyw dlugosci odcinka")
+    path_E, len_results = plot_length_influence(save_dir, n_workers)
+    paths.append(path_E)
+    path_btkm, _ = plot_length_influence(
+        save_dir,
+        n_workers,
+        results=len_results,
+        metric="E_per_btkm_Wh",
+        ylabel=BTKM_YLABEL,
+        fname_suffix="_btkm",
+    )
+    paths.append(path_btkm)
 
     return paths
 

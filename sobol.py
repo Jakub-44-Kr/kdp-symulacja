@@ -22,6 +22,7 @@ Autor: Jakub Król, PW WE, 2026
 from __future__ import annotations
 
 import os
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
@@ -233,7 +234,7 @@ def convergence_test(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def export_sobol_indices(results: dict, save_dir=OUTPUT_DIR) -> dict:
+def export_sobol_indices(results: dict, save_dir=OUTPUT_DIR, suffix: str = "") -> dict:
     """Zapisuje indeksy Sobola do CSV (S1/ST + interakcje S2)."""
     save_dir.mkdir(parents=True, exist_ok=True)
     system = results["system"]
@@ -249,7 +250,7 @@ def export_sobol_indices(results: dict, save_dir=OUTPUT_DIR) -> dict:
             "ST_conf": results["ST_conf"],
         }
     )
-    path_main = save_dir / f"sobol_indices_{system}.csv"
+    path_main = save_dir / f"sobol_indices_{system}{suffix}.csv"
     df_main.to_csv(path_main, index=False, float_format="%.6g")
 
     # S2 - interakcje drugiego rzędu (macierz n×n, tylko górny trójkąt)
@@ -266,7 +267,7 @@ def export_sobol_indices(results: dict, save_dir=OUTPUT_DIR) -> dict:
                 }
             )
     df_s2 = pd.DataFrame(rows_s2)
-    path_s2 = save_dir / f"sobol_interactions_{system}.csv"
+    path_s2 = save_dir / f"sobol_interactions_{system}{suffix}.csv"
     df_s2.to_csv(path_s2, index=False, float_format="%.6g")
 
     return {"main": path_main, "interactions": path_s2}
@@ -331,23 +332,38 @@ def print_sobol_report(results: dict) -> None:
 
 if __name__ == "__main__":
     n_cpu = os.cpu_count() or 4
-    print("=" * 78)
-    print("GLOBALNA ANALIZA WRAŻLIWOŚCI — INDEKSY SOBOLA")
-    print(f"  Procesory: {n_cpu}, używam {n_cpu - 1} procesów")
-    print("=" * 78)
+    # N z linii poleceń: `python sobol.py 512` (domyślnie 512). Mniejsze = szybszy test.
+    N = int(sys.argv[1]) if len(sys.argv) > 1 else 512
 
-    # Na start mniejsze N żeby szybko zobaczyć czy działa
-    N_TEST = 256  # → 256·7 = 1792 uruchomień/system
+    print("=" * 78)
+    print(
+        "GLOBALNA ANALIZA WRAŻLIWOŚCI — INDEKSY SOBOLA (warianty: z / bez rekuperacji)"
+    )
+    print(f"  N={N}, procesory: {n_cpu}, używam {max(1, n_cpu - 1)} procesów")
+    print("=" * 78)
 
     t0 = time.perf_counter()
     for system in ("AC", "DC"):
         print()
-        print(f">>> System {system}...")
-        results = run_sobol_for_system(system, N=N_TEST)
-        print_sobol_report(results)
-        paths = export_sobol_indices(results)
-        for key, path in paths.items():
-            print(f"    zapisano {key}: {path.name}")
+        print(f">>> System {system} — wariant Z rekuperacją...")
+        res_z = run_sobol_for_system(system, N=N, regen=True)
+        print_sobol_report(res_z)
+        export_sobol_indices(res_z, suffix="")
+
+        print(f">>> System {system} — wariant BEZ rekuperacji...")
+        res_bez = run_sobol_for_system(system, N=N, regen=False)
+        export_sobol_indices(res_bez, suffix="_bez")
+
+        print(
+            f"    [{system}] Y_mean: z={res_z['Y_mean']:.2f}  "
+            f"bez={res_bez['Y_mean']:.2f} kWh/km  "
+            f"(bez≥z: {res_bez['Y_mean'] >= res_z['Y_mean']})"
+        )
+        print(
+            f"    [{system}] zapisano: sobol_indices_{system}.csv, "
+            f"sobol_indices_{system}_bez.csv, sobol_interactions_{system}.csv, "
+            f"sobol_interactions_{system}_bez.csv"
+        )
 
     print()
     print(f"✓ Łączny czas: {time.perf_counter() - t0:.1f} s")
