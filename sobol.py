@@ -19,51 +19,51 @@ wpływ pozostałych parametrów (prędkość, pochylenie) zamiast samej długoś
 Autor: Jakub Król, PW WE, 2026
 """
 
-from __future__ import annotations
+from __future__ import annotations 
 
-import os
-import sys
-import time
-from concurrent.futures import ProcessPoolExecutor
+import os 
+import sys 
+import time 
+from concurrent .futures import ProcessPoolExecutor 
 
-import numpy as np
-import pandas as pd
-from SALib.analyze import sobol as sobol_analyze
-from SALib.sample import sobol as sobol_sample
+import numpy as np 
+import pandas as pd 
+from SALib .analyze import sobol as sobol_analyze 
+from SALib .sample import sobol as sobol_sample 
 
-from energy import compute_energy
-from parameters import OUTPUT_DIR, Parameters
-from simulation import run_simulation
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  DEFINICJA PROBLEMU (zakresy z Tabeli 4, jednostki SI)
-# ═══════════════════════════════════════════════════════════════════════════
+from energy import compute_energy 
+from parameters import OUTPUT_DIR ,Parameters 
+from simulation import run_simulation 
 
 
-def build_problem(system: str) -> dict:
+
+
+
+
+def build_problem (system :str )->dict :
     """Problem SALib: 5 parametrów, rozkłady jednostajne, ZAKRESY PER SYSTEM (spójne z OAT).
     AC: v_max 100-400 km/h, P_nom 6-12 MW. DC: v_max 100-250 km/h (sufit), P_nom 6-9 MW."""
-    system = system.upper()
-    if system == "DC":
-        v_bounds = [100 / 3.6, 250 / 3.6]
-        P_bounds = [6e6, 9e6]
-    else:
-        v_bounds = [100 / 3.6, 400 / 3.6]
-        P_bounds = [6e6, 12e6]
+    system =system .upper ()
+    if system =="DC":
+        v_bounds =[100 /3.6 ,250 /3.6 ]
+        P_bounds =[6e6 ,9e6 ]
+    else :
+        v_bounds =[100 /3.6 ,400 /3.6 ]
+        P_bounds =[6e6 ,12e6 ]
     return {
-        "num_vars": 5,
-        "names": ["v_max", "m", "P_nom", "gradient", "L"],
-        "bounds": [
-            v_bounds,
-            [450_000.0, 750_000.0],
-            P_bounds,
-            [-5.0, 5.0],
-            [50_000.0, 400_000.0],
-        ],
+    "num_vars":5 ,
+    "names":["v_max","m","P_nom","gradient","L"],
+    "bounds":[
+    v_bounds ,
+    [450_000.0 ,750_000.0 ],
+    P_bounds ,
+    [-5.0 ,5.0 ],
+    [50_000.0 ,400_000.0 ],
+    ],
     }
 
 
-def _sobol_worker(args: tuple[np.ndarray, str, bool]) -> float:
+def _sobol_worker (args :tuple [np .ndarray ,str ,bool ])->float :
     """
     Worker multiprocessing. Dostaje wektor parametrów (jeden wiersz macierzy
     próbek Saltelli) + system zasilania, zwraca E_per_km [kWh/km].
@@ -75,37 +75,37 @@ def _sobol_worker(args: tuple[np.ndarray, str, bool]) -> float:
     Returns:
         E_per_km — jednostkowe zużycie energii netto [kWh/km].
     """
-    param_vector, system, regen = args
-    v_max, m, P_nom, gradient, L = param_vector
+    param_vector ,system ,regen =args 
+    v_max ,m ,P_nom ,gradient ,L =param_vector 
 
-    base = Parameters.base()
-    p = base.with_changes(
-        power_system=system,
-        v_max=float(v_max),
-        m=float(m),
-        P_nom=float(P_nom),
-        gradient=float(gradient),
-        L=float(L),
-        regen=bool(regen),
+    base =Parameters .base ()
+    p =base .with_changes (
+    power_system =system ,
+    v_max =float (v_max ),
+    m =float (m ),
+    P_nom =float (P_nom ),
+    gradient =float (gradient ),
+    L =float (L ),
+    regen =bool (regen ),
     )
 
-    profile = [(0.0, p.L, p.gradient)]
-    sim = run_simulation(p, profile)
-    energy = compute_energy(sim, p)
-    return energy.E_per_km  # kWh/km (E_pant_netto / L)
+    profile =[(0.0 ,p .L ,p .gradient )]
+    sim =run_simulation (p ,profile )
+    energy =compute_energy (sim ,p )
+    return energy .E_per_km 
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  EWALUACJA MODELU dla wszystkich próbek (równolegle)
-# ═══════════════════════════════════════════════════════════════════════════
 
 
-def evaluate_samples(
-    param_values: np.ndarray,
-    system: str,
-    regen: bool = True,
-    n_workers: int | None = None,
-) -> np.ndarray:
+
+
+
+def evaluate_samples (
+param_values :np .ndarray ,
+system :str ,
+regen :bool =True ,
+n_workers :int |None =None ,
+)->np .ndarray :
     """
     Uruchamia model dla wszystkich wierszy macierzy próbek (równolegle).
 
@@ -117,35 +117,35 @@ def evaluate_samples(
     Returns:
         Wektor wyjść Y (E_per_km [kWh/km]) o długości równej liczbie próbek.
     """
-    if n_workers is None:
-        n_workers = max(1, (os.cpu_count() or 4) - 1)
+    if n_workers is None :
+        n_workers =max (1 ,(os .cpu_count ()or 4 )-1 )
 
-    tasks = [(row, system, regen) for row in param_values]
-    n_total = len(tasks)
-    Y = np.zeros(n_total, dtype=np.float64)
+    tasks =[(row ,system ,regen )for row in param_values ]
+    n_total =len (tasks )
+    Y =np .zeros (n_total ,dtype =np .float64 )
 
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        # map zachowuje kolejność - kluczowe dla Sobola!
-        for i, result in enumerate(executor.map(_sobol_worker, tasks, chunksize=16)):
-            Y[i] = result
-            if (i + 1) % 500 == 0 or (i + 1) == n_total:
-                print(f"      {i + 1}/{n_total} przejazdów")
+    with ProcessPoolExecutor (max_workers =n_workers )as executor :
 
-    return Y
+        for i ,result in enumerate (executor .map (_sobol_worker ,tasks ,chunksize =16 )):
+            Y [i ]=result 
+            if (i +1 )%500 ==0 or (i +1 )==n_total :
+                print (f"      {i +1 }/{n_total } przejazdów")
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  GŁÓWNA ANALIZA SOBOLA dla jednego systemu
-# ═══════════════════════════════════════════════════════════════════════════
+    return Y 
 
 
-def run_sobol_for_system(
-    system: str,
-    N: int = 512,
-    regen: bool = True,
-    n_workers: int | None = None,
-    seed: int = 42,
-) -> dict:
+
+
+
+
+
+def run_sobol_for_system (
+system :str ,
+N :int =512 ,
+regen :bool =True ,
+n_workers :int |None =None ,
+seed :int =42 ,
+)->dict :
     """
     Pełna analiza Sobola dla jednego systemu zasilania.
 
@@ -158,51 +158,51 @@ def run_sobol_for_system(
     Returns:
         Słownik z indeksami S1, ST, ich błędami (conf) i metadanymi.
     """
-    problem = build_problem(system)
-    n = problem["num_vars"]
+    problem =build_problem (system )
+    n =problem ["num_vars"]
 
-    # Próbkowanie Saltelli (sekwencja Sobola)
-    param_values = sobol_sample.sample(problem, N, calc_second_order=True, seed=seed)
-    n_runs = len(param_values)
-    print(f"    [{system}] N={N} → {n_runs} uruchomień modelu ({N}·({n}+2))")
 
-    # Ewaluacja modelu
-    t0 = time.perf_counter()
-    Y = evaluate_samples(param_values, system, regen, n_workers)
-    print(f"    [{system}] ewaluacja: {time.perf_counter() - t0:.1f} s")
+    param_values =sobol_sample .sample (problem ,N ,calc_second_order =True ,seed =seed )
+    n_runs =len (param_values )
+    print (f"    [{system }] N={N } → {n_runs } uruchomień modelu ({N }·({n }+2))")
 
-    # Analiza Sobola
-    Si = sobol_analyze.analyze(problem, Y, calc_second_order=True, seed=seed)
+
+    t0 =time .perf_counter ()
+    Y =evaluate_samples (param_values ,system ,regen ,n_workers )
+    print (f"    [{system }] ewaluacja: {time .perf_counter ()-t0 :.1f} s")
+
+
+    Si =sobol_analyze .analyze (problem ,Y ,calc_second_order =True ,seed =seed )
 
     return {
-        "system": system,
-        "regen": regen,
-        "N": N,
-        "n_runs": n_runs,
-        "names": problem["names"],
-        "S1": Si["S1"],
-        "S1_conf": Si["S1_conf"],
-        "ST": Si["ST"],
-        "ST_conf": Si["ST_conf"],
-        "S2": Si["S2"],  # interakcje drugiego rzędu (macierz)
-        "S2_conf": Si["S2_conf"],
-        "Y_mean": float(np.mean(Y)),
-        "Y_std": float(np.std(Y)),
-        "Y": Y,
-        "param_values": param_values,
+    "system":system ,
+    "regen":regen ,
+    "N":N ,
+    "n_runs":n_runs ,
+    "names":problem ["names"],
+    "S1":Si ["S1"],
+    "S1_conf":Si ["S1_conf"],
+    "ST":Si ["ST"],
+    "ST_conf":Si ["ST_conf"],
+    "S2":Si ["S2"],
+    "S2_conf":Si ["S2_conf"],
+    "Y_mean":float (np .mean (Y )),
+    "Y_std":float (np .std (Y )),
+    "Y":Y ,
+    "param_values":param_values ,
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  TEST ZBIEŻNOŚCI — rosnące N
-# ═══════════════════════════════════════════════════════════════════════════
 
 
-def convergence_test(
-    system: str = "AC",
-    N_values: tuple[int, ...] = (128, 256, 512, 1024),
-    n_workers: int | None = None,
-) -> pd.DataFrame:
+
+
+
+def convergence_test (
+system :str ="AC",
+N_values :tuple [int ,...]=(128 ,256 ,512 ,1024 ),
+n_workers :int |None =None ,
+)->pd .DataFrame :
     """
     Test zbieżności indeksów Sobola: oblicza S_i i S_Ti dla rosnących N
     i sprawdza czy się stabilizują (metodyka rozdz. 4.6).
@@ -210,160 +210,160 @@ def convergence_test(
     Returns:
         DataFrame: kolumny N, parameter, S1, ST + błędy.
     """
-    rows = []
-    for N in N_values:
-        print(f"  >>> Test zbieżności N={N}...")
-        res = run_sobol_for_system(system, N=N, n_workers=n_workers)
-        for i, name in enumerate(res["names"]):
-            rows.append(
-                {
-                    "N": N,
-                    "n_runs": res["n_runs"],
-                    "parameter": name,
-                    "S1": res["S1"][i],
-                    "S1_conf": res["S1_conf"][i],
-                    "ST": res["ST"][i],
-                    "ST_conf": res["ST_conf"][i],
-                }
+    rows =[]
+    for N in N_values :
+        print (f"  >>> Test zbieżności N={N }...")
+        res =run_sobol_for_system (system ,N =N ,n_workers =n_workers )
+        for i ,name in enumerate (res ["names"]):
+            rows .append (
+            {
+            "N":N ,
+            "n_runs":res ["n_runs"],
+            "parameter":name ,
+            "S1":res ["S1"][i ],
+            "S1_conf":res ["S1_conf"][i ],
+            "ST":res ["ST"][i ],
+            "ST_conf":res ["ST_conf"][i ],
+            }
             )
-    return pd.DataFrame(rows)
+    return pd .DataFrame (rows )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  EKSPORT
-# ═══════════════════════════════════════════════════════════════════════════
 
 
-def export_sobol_indices(results: dict, save_dir=OUTPUT_DIR, suffix: str = "") -> dict:
+
+
+
+def export_sobol_indices (results :dict ,save_dir =OUTPUT_DIR ,suffix :str ="")->dict :
     """Zapisuje indeksy Sobola do CSV (S1/ST + interakcje S2)."""
-    save_dir.mkdir(parents=True, exist_ok=True)
-    system = results["system"]
-    names = results["names"]
+    save_dir .mkdir (parents =True ,exist_ok =True )
+    system =results ["system"]
+    names =results ["names"]
 
-    # S1 i ST
-    df_main = pd.DataFrame(
-        {
-            "parameter": names,
-            "S1": results["S1"],
-            "S1_conf": results["S1_conf"],
-            "ST": results["ST"],
-            "ST_conf": results["ST_conf"],
-        }
+
+    df_main =pd .DataFrame (
+    {
+    "parameter":names ,
+    "S1":results ["S1"],
+    "S1_conf":results ["S1_conf"],
+    "ST":results ["ST"],
+    "ST_conf":results ["ST_conf"],
+    }
     )
-    path_main = save_dir / f"sobol_indices_{system}{suffix}.csv"
-    df_main.to_csv(path_main, index=False, float_format="%.6g")
+    path_main =save_dir /f"sobol_indices_{system }{suffix }.csv"
+    df_main .to_csv (path_main ,index =False ,float_format ="%.6g")
 
-    # S2 - interakcje drugiego rzędu (macierz n×n, tylko górny trójkąt)
-    S2 = results["S2"]
-    rows_s2 = []
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            rows_s2.append(
-                {
-                    "param_i": names[i],
-                    "param_j": names[j],
-                    "S2": S2[i, j],
-                    "S2_conf": results["S2_conf"][i, j],
-                }
+
+    S2 =results ["S2"]
+    rows_s2 =[]
+    for i in range (len (names )):
+        for j in range (i +1 ,len (names )):
+            rows_s2 .append (
+            {
+            "param_i":names [i ],
+            "param_j":names [j ],
+            "S2":S2 [i ,j ],
+            "S2_conf":results ["S2_conf"][i ,j ],
+            }
             )
-    df_s2 = pd.DataFrame(rows_s2)
-    path_s2 = save_dir / f"sobol_interactions_{system}{suffix}.csv"
-    df_s2.to_csv(path_s2, index=False, float_format="%.6g")
+    df_s2 =pd .DataFrame (rows_s2 )
+    path_s2 =save_dir /f"sobol_interactions_{system }{suffix }.csv"
+    df_s2 .to_csv (path_s2 ,index =False ,float_format ="%.6g")
 
-    return {"main": path_main, "interactions": path_s2}
+    return {"main":path_main ,"interactions":path_s2 }
 
 
-def print_sobol_report(results: dict) -> None:
+def print_sobol_report (results :dict )->None :
     """Drukuje czytelny raport indeksów Sobola."""
-    system = results["system"]
-    names = results["names"]
-    print()
-    print("=" * 78)
-    print(
-        f"INDEKSY SOBOLA — system {system}  (N={results['N']}, "
-        f"{results['n_runs']} uruchomień)"
+    system =results ["system"]
+    names =results ["names"]
+    print ()
+    print ("="*78 )
+    print (
+    f"INDEKSY SOBOLA — system {system }  (N={results ['N']}, "
+    f"{results ['n_runs']} uruchomień)"
     )
-    print(
-        f"  E/km: średnia = {results['Y_mean']:.2f} kWh/km, "
-        f"odch.std = {results['Y_std']:.2f} kWh/km"
+    print (
+    f"  E/km: średnia = {results ['Y_mean']:.2f} kWh/km, "
+    f"odch.std = {results ['Y_std']:.2f} kWh/km"
     )
-    print("=" * 78)
-    print(
-        f"{'Parametr':>12} {'S_i (1.rz)':>14} {'S_Ti (całk)':>14} "
-        f"{'S_Ti - S_i':>12} {'interakcje?':>12}"
+    print ("="*78 )
+    print (
+    f"{'Parametr':>12} {'S_i (1.rz)':>14} {'S_Ti (całk)':>14} "
+    f"{'S_Ti - S_i':>12} {'interakcje?':>12}"
     )
-    print("-" * 70)
+    print ("-"*70 )
 
-    # Sortuj wg ST malejąco
-    order = np.argsort(results["ST"])[::-1]
-    for idx in order:
-        S1 = results["S1"][idx]
-        ST = results["ST"][idx]
-        diff = ST - S1
-        interact = "TAK" if diff > 0.05 else "—"
-        print(f"{names[idx]:>12} {S1:>14.4f} {ST:>14.4f} {diff:>12.4f} {interact:>12}")
 
-    print("-" * 70)
-    print(
-        f"  Suma S_i = {np.sum(results['S1']):.4f}  "
-        f"(≈1 → model addytywny; <1 → istotne interakcje)"
+    order =np .argsort (results ["ST"])[::-1 ]
+    for idx in order :
+        S1 =results ["S1"][idx ]
+        ST =results ["ST"][idx ]
+        diff =ST -S1 
+        interact ="TAK"if diff >0.05 else "—"
+        print (f"{names [idx ]:>12} {S1 :>14.4f} {ST :>14.4f} {diff :>12.4f} {interact :>12}")
+
+    print ("-"*70 )
+    print (
+    f"  Suma S_i = {np .sum (results ['S1']):.4f}  "
+    f"(≈1 → model addytywny; <1 → istotne interakcje)"
     )
 
-    # Najsilniejsza interakcja drugiego rzędu
-    S2 = results["S2"]
-    max_s2 = 0.0
-    max_pair = None
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            if not np.isnan(S2[i, j]) and S2[i, j] > max_s2:
-                max_s2 = S2[i, j]
-                max_pair = (names[i], names[j])
-    if max_pair:
-        print(
-            f"  Najsilniejsza interakcja 2.rz: {max_pair[0]} × {max_pair[1]} "
-            f"= {max_s2:.4f}"
+
+    S2 =results ["S2"]
+    max_s2 =0.0 
+    max_pair =None 
+    for i in range (len (names )):
+        for j in range (i +1 ,len (names )):
+            if not np .isnan (S2 [i ,j ])and S2 [i ,j ]>max_s2 :
+                max_s2 =S2 [i ,j ]
+                max_pair =(names [i ],names [j ])
+    if max_pair :
+        print (
+        f"  Najsilniejsza interakcja 2.rz: {max_pair [0 ]} × {max_pair [1 ]} "
+        f"= {max_s2 :.4f}"
         )
-    print("=" * 78)
+    print ("="*78 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  🚀 SZYBKI TEST
-# ═══════════════════════════════════════════════════════════════════════════
 
-if __name__ == "__main__":
-    n_cpu = os.cpu_count() or 4
-    # N z linii poleceń: `python sobol.py 512` (domyślnie 512). Mniejsze = szybszy test.
-    N = int(sys.argv[1]) if len(sys.argv) > 1 else 512
 
-    print("=" * 78)
-    print(
-        "GLOBALNA ANALIZA WRAŻLIWOŚCI — INDEKSY SOBOLA (warianty: z / bez rekuperacji)"
+
+
+if __name__ =="__main__":
+    n_cpu =os .cpu_count ()or 4 
+
+    N =int (sys .argv [1 ])if len (sys .argv )>1 else 512 
+
+    print ("="*78 )
+    print (
+    "GLOBALNA ANALIZA WRAŻLIWOŚCI — INDEKSY SOBOLA (warianty: z / bez rekuperacji)"
     )
-    print(f"  N={N}, procesory: {n_cpu}, używam {max(1, n_cpu - 1)} procesów")
-    print("=" * 78)
+    print (f"  N={N }, procesory: {n_cpu }, używam {max (1 ,n_cpu -1 )} procesów")
+    print ("="*78 )
 
-    t0 = time.perf_counter()
-    for system in ("AC", "DC"):
-        print()
-        print(f">>> System {system} — wariant Z rekuperacją...")
-        res_z = run_sobol_for_system(system, N=N, regen=True)
-        print_sobol_report(res_z)
-        export_sobol_indices(res_z, suffix="")
+    t0 =time .perf_counter ()
+    for system in ("AC","DC"):
+        print ()
+        print (f">>> System {system } — wariant Z rekuperacją...")
+        res_z =run_sobol_for_system (system ,N =N ,regen =True )
+        print_sobol_report (res_z )
+        export_sobol_indices (res_z ,suffix ="")
 
-        print(f">>> System {system} — wariant BEZ rekuperacji...")
-        res_bez = run_sobol_for_system(system, N=N, regen=False)
-        export_sobol_indices(res_bez, suffix="_bez")
+        print (f">>> System {system } — wariant BEZ rekuperacji...")
+        res_bez =run_sobol_for_system (system ,N =N ,regen =False )
+        export_sobol_indices (res_bez ,suffix ="_bez")
 
-        print(
-            f"    [{system}] Y_mean: z={res_z['Y_mean']:.2f}  "
-            f"bez={res_bez['Y_mean']:.2f} kWh/km  "
-            f"(bez≥z: {res_bez['Y_mean'] >= res_z['Y_mean']})"
+        print (
+        f"    [{system }] Y_mean: z={res_z ['Y_mean']:.2f}  "
+        f"bez={res_bez ['Y_mean']:.2f} kWh/km  "
+        f"(bez≥z: {res_bez ['Y_mean']>=res_z ['Y_mean']})"
         )
-        print(
-            f"    [{system}] zapisano: sobol_indices_{system}.csv, "
-            f"sobol_indices_{system}_bez.csv, sobol_interactions_{system}.csv, "
-            f"sobol_interactions_{system}_bez.csv"
+        print (
+        f"    [{system }] zapisano: sobol_indices_{system }.csv, "
+        f"sobol_indices_{system }_bez.csv, sobol_interactions_{system }.csv, "
+        f"sobol_interactions_{system }_bez.csv"
         )
 
-    print()
-    print(f"✓ Łączny czas: {time.perf_counter() - t0:.1f} s")
+    print ()
+    print (f"✓ Łączny czas: {time .perf_counter ()-t0 :.1f} s")
