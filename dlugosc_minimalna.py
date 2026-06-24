@@ -1,23 +1,4 @@
-"""
-dlugosc_minimalna.py — Minimalna długość odcinka do osiągnięcia prędkości zadanej.
 
-Wariant DODATKOWY, w pełni samodzielny: korzysta wyłącznie z istniejącego modelu
-(parameters/simulation) i NIE modyfikuje żadnego innego pliku ani nie wpływa na
-resztę pipeline'u. Dla scenariusza bazowego (m = 600 t, i = 0 ‰), przy MAKSYMALNEJ
-mocy każdego systemu (AC 12 MW, DC 9 MW), wyznacza najmniejszą długość odcinka L,
-na której pociąg zdąży rozpędzić się do zadanej prędkości (profil "trójkątny":
-rozpęd → wierzchołek równy prędkości zadanej → hamowanie do zera).
-
-Cel: podkreślić różnicę AC/DC — niższa moc DC oznacza dłuższy rozbieg do tej samej
-prędkości oraz niższy pułap prędkości na płaskim torze.
-
-Wyniki (wszystkie z modelu): tabela (CSV + LaTeX) oraz wykres L_min(v).
-
-Uruchomienie:
-    python dlugosc_minimalna.py
-
-Autor: Jakub Król, PW WE, 2026
-"""
 
 from __future__ import annotations 
 
@@ -70,10 +51,7 @@ COLOR ={"AC":"#1f5fa6","DC":"#c1121f"}
 
 
 def _apex_kmh (L_km :float ,vt_kmh :float ,system :str )->float :
-    """Maksymalna prędkość osiągnięta na odcinku L [km] przy prędkości zadanej vt.
-
-    Scenariusz bazowy (m, pochylenie itd. z Parameters.base()), moc = sufit systemu.
-    """
+    
     p =Parameters .base ().with_changes (
     power_system =system ,
     v_max =vt_kmh /3.6 ,
@@ -84,16 +62,11 @@ def _apex_kmh (L_km :float ,vt_kmh :float ,system :str )->float :
 
 
 def ceiling_kmh (system :str )->float :
-    """Pułap prędkości na płaskim torze (zadanie 450 km/h na bardzo długim odcinku)."""
-    return _apex_kmh (600.0 ,450.0 ,system )
+        return _apex_kmh (600.0 ,450.0 ,system )
 
 
 def min_length_km (vt_kmh :float ,system :str )->float |None :
-    """Najmniejsze L [km], na którym pociąg osiąga prędkość vt.
-
-    Zwraca None, jeżeli vt leży powyżej pułapu systemu (nieosiągalna na żadnym L).
-    Wyszukiwanie binarne — funkcja "osiągnięto" jest monotoniczna względem L.
-    """
+    
     if _apex_kmh (L_SEARCH_HI_KM ,vt_kmh ,system )<vt_kmh -V_TOL_KMH :
         return None 
     lo ,hi =2.0 ,L_SEARCH_HI_KM 
@@ -107,8 +80,7 @@ def min_length_km (vt_kmh :float ,system :str )->float |None :
 
 
 def compute (speeds_kmh :list [int ])->dict :
-    """Zwraca {v: {'AC': L_min|None, 'DC': L_min|None}} dla zadanych prędkości."""
-    return {vt :{s :min_length_km (vt ,s )for s in ("AC","DC")}for vt in speeds_kmh }
+        return {vt :{s :min_length_km (vt ,s )for s in ("AC","DC")}for vt in speeds_kmh }
 
 
 
