@@ -1,19 +1,4 @@
-"""
-results.py — Eksport wyników symulacji do plików.
 
-Zapisuje wyniki w dwóch formatach:
-  - CSV - tablice profilu dynamicznego (do dalszej analizy w Excel, pandas)
-  - JSON - skalary, parametry, metryki (do agregacji wyników wielu scenariuszy)
-
-Konwencja nazewnictwa plików:
-  scenario_{tag}_profile.csv   - tablica x, t, v, F, P, I
-  scenario_{tag}_summary.json  - metadane + skalary
-  scenario_{tag}_params.json   - kopia parametrów wejściowych
-
-gdzie {tag} = krótki tag scenariusza (np. "base", "v400_m750_DC").
-
-Autor: Jakub Król, PW WE, 2026
-"""
 
 from __future__ import annotations 
 
@@ -38,12 +23,7 @@ energy :EnergyResults ,
 tag :str ="base",
 save_dir :Path =OUTPUT_DIR ,
 )->Path :
-    """
-    Eksportuje pełny profil dynamiczny i energetyczny do CSV.
-
-    Każdy wiersz = jeden punkt symulacji (co dx = 1 m).
-    Kolumny: x, t, v, a, faza, siły, moce, prąd.
-    """
+    
     df =pd .DataFrame (
     {
     "x_m":sim .x ,
@@ -84,10 +64,7 @@ p :Parameters ,
 tag :str ="base",
 save_dir :Path =OUTPUT_DIR ,
 )->Path :
-    """
-    Eksportuje skalary i metryki + kopię parametrów do JSON.
-    Format gotowy do agregacji wyników wielu scenariuszy w pandas.
-    """
+    
     summary ={
     "tag":tag ,
     "timestamp":datetime .now ().isoformat (timespec ="seconds"),
@@ -160,12 +137,7 @@ p :Parameters ,
 tag :str ="base",
 save_dir :Path =OUTPUT_DIR ,
 )->dict [str ,Path ]:
-    """
-    Eksportuje wszystkie wyniki scenariusza.
-
-    Returns:
-        Słownik z kluczami: 'csv', 'json' i ścieżkami do plików.
-    """
+    
     save_dir .mkdir (parents =True ,exist_ok =True )
     return {
     "csv":export_profile_csv (sim ,energy ,tag ,save_dir ),

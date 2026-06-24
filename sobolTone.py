@@ -62,18 +62,7 @@ def transform_oat_to_btkm (
 elasticity_csv :Path |None =None ,
 save_dir :Path =OUTPUT_DIR ,
 )->pd .DataFrame :
-    """
-    Przelicza elastyczności OAT z metryki kWh/km na Wh/(b·tkm), operując
-    wyłącznie na istniejącym pliku sensitivity_elasticity.csv (bez symulacji).
-
-    Dla parametrów ≠ masa: masa pozostaje na poziomie bazowym (stały dzielnik),
-    więc względna zmiana wyjścia i elastyczności są identyczne jak dla kWh/km;
-    przeliczane są tylko kolumny energii (× 1e6 / m_base).
-    Dla masy: dzielnik zmienia się wraz z perturbacją (m_base, m_plus, m_minus),
-    więc elastyczność jest przeliczana od nowa z wartości energii w Wh/btkm.
-    Krok względny perturbacji jest odzyskiwany z definicji elastyczności km
-    (dla masy S_plus ≠ 0), dzięki czemu metoda jest niezależna od wartości delta.
-    """
+    
     if elasticity_csv is None :
         elasticity_csv =save_dir /"sensitivity_elasticity.csv"
     if not Path (elasticity_csv ).exists ():
@@ -168,11 +157,7 @@ save_dir :Path =OUTPUT_DIR ,
 def _load_or_compute_Y (
 system :str ,N :int ,seed :int ,n_workers :int |None 
 )->tuple [np .ndarray ,np .ndarray ]:
-    """
-    Zwraca (Y, param_values) dla wariantu regen=True przy zadanym N.
-    Korzysta z cache sobol_raw_{system}.npz, jeśli istnieje i zgadza się
-    (N, seed). W przeciwnym razie liczy raz i zapisuje cache.
-    """
+    
     from SALib .sample import sobol as sobol_sample 
 
     from sobol import build_problem ,evaluate_samples 
@@ -209,11 +194,7 @@ system :str ,N :int ,seed :int ,n_workers :int |None
 def sobol_btkm_for_system (
 system :str ,N :int =1024 ,seed :int =42 ,n_workers :int |None =None 
 )->dict :
-    """
-    Indeksy Sobola dla funkcji celu Wh/(b·tkm) = E_per_km · 1e6 / m.
-    Ta sama macierz próbek i ten sam wektor Y (regen=True) co analiza km —
-    zmienia się wyłącznie normalizacja wielkości wyjściowej.
-    """
+    
     from SALib .analyze import sobol as sobol_analyze 
 
     from sobol import build_problem 
@@ -263,12 +244,7 @@ def _report_sobol (res :dict )->None :
 
 
 def plot_sobol_btkm (res_ac :dict ,res_dc :dict ,save_dir :Path =OUTPUT_DIR )->Path :
-    """
-    Dwupanelowy wykres kolumnowy dla metryki Wh/(b·tkm):
-      - panel górny:  S_i (słupek pełny) i S_Ti (słupek jaśniejszy), AC vs DC,
-      - panel dolny:  interakcje S_ij dla wszystkich 10 par, AC vs DC,
-                      posortowane malejąco wg max(|S_ij^AC|, |S_ij^DC|).
-    """
+    
     import matplotlib .pyplot as plt 
     from matplotlib .patches import Patch 
 

@@ -1,19 +1,4 @@
-"""
-main.py — Punkt wejścia symulacji ruchu pociągu KDP.
 
-Uruchamia kompletny pipeline:
-  1. Wczytanie parametrów scenariusza bazowego (parameters.py)
-  2. Symulacja przejazdu (simulation.py)
-  3. Bilans energetyczny (energy.py)
-  4. Walidacja (validation.py)
-  5. Eksport wyników CSV + JSON (results.py)
-  6. Wykresy (plotting.py)
-
-Aby uruchomić inny scenariusz - edytuj parameters.py (sekcja "STREFA EDYCJI")
-lub przekaż argumenty przez kod (zobacz przykład na dole).
-
-Autor: Jakub Król, PW WE, 2026
-"""
 
 from __future__ import annotations 
 
@@ -29,17 +14,7 @@ from validation import print_validation_report ,run_validation
 
 
 def run_scenario (p :Parameters ,tag :str ="base",make_plots :bool =True )->dict :
-    """
-    Uruchamia pełny pipeline dla zadanego zestawu parametrów.
-
-    Args:
-        p: Parametry symulacji.
-        tag: Krótka etykieta scenariusza do nazw plików wyjściowych.
-        make_plots: Czy generować wykresy (wolne dla batchowych analiz).
-
-    Returns:
-        Słownik z wynikami (sim, energy, validation_checks, output_paths).
-    """
+    
     print ()
     print ("╔"+"═"*78 +"╗")
     print (f"║  SCENARIUSZ: {tag :<63s} ║")
@@ -99,8 +74,7 @@ def run_scenario (p :Parameters ,tag :str ="base",make_plots :bool =True )->dict
 
 
 def main ()->int :
-    """Główna funkcja - uruchamia scenariusz bazowy."""
-
+    
     p_base =Parameters .base ()
     result =run_scenario (p_base ,tag ="base",make_plots =True )
 

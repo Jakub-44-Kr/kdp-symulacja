@@ -1,19 +1,4 @@
-"""
-energy.py — Bilans energetyczny przejazdu pociągu KDP.
 
-Moduł post-processingu: dostaje gotowy SimulationProfile i wylicza:
-  - momentalne moce na kole i pantografie (tablice)
-  - prąd na pantografie (uproszczony, bez cos φ dla AC)
-  - całkowite energie w fazach trakcyjnych, hamowania, rekuperacji
-  - energię jednostkową E [kWh/(100 km·t)] - metryka porównawcza KDP
-
-Konwencja znaków:
-  - P_pant > 0 = pobór z sieci (trakcja, aux)
-  - P_pant < 0 = zwrot do sieci (rekuperacja, tylko gdy η_grid > 0)
-  - E_netto = pobrana - zwrócona
-
-Autor: Jakub Król, PW WE, 2026
-"""
 
 from __future__ import annotations 
 
@@ -34,15 +19,7 @@ J_TO_KWH :float =1.0 /3.6e6
 
 
 def _F_brake_max_electric_vec (v :np .ndarray ,p :Parameters )->np .ndarray :
-    """
-    Wektorowa wersja physics.F_brake_max_electric.
-
-    Dla każdego v w tablicy:
-      - v < v_brake_min        → 0 (poniżej progu, tylko mechaniczny)
-      - v_brake_min ≤ v ≤ v_1  → F_max (region stałej siły)
-      - v_1 < v ≤ v_2          → P_eff_max / v (region stałej mocy)
-      - v > v_2                → P_eff_max · v_2 / v² (osłabianie pola)
-    """
+    
     F =np .zeros_like (v )
 
     mask_const =(v >=p .v_brake_min )&(v <=p .v_breakpoint )
@@ -63,34 +40,7 @@ def _F_brake_max_electric_vec (v :np .ndarray ,p :Parameters )->np .ndarray :
 
 @dataclass 
 class EnergyResults :
-    """
-    Kompletny bilans energetyczny przejazdu.
-
-    Atrybuty - momentalne (tablice, długość N):
-        P_kolo:        Moc na kole napędowym [W] (≥0 w trakcji, ≤0 w hamowaniu el.)
-        P_pant_draw:   Moc pobierana z pantografu [W] (zawsze ≥0)
-        P_pant_rec:    Moc zwracana do sieci [W] (zawsze ≥0)
-        P_pant_net:    Moc netto = draw - rec [W] (może być ujemna)
-        I_pant:        Prąd na pantografie [A] (wartość bezwzględna)
-        F_brake_el:    Siła hamulca elektrycznego [N]
-        F_brake_mech:  Siła hamulca mechanicznego [N]
-
-    Atrybuty - skalary energii [J]:
-        E_trakcja_kolo:   Energia mechaniczna na kole w fazach trakcyjnych
-        E_trakcja_pant:   Energia na pantografie zużyta na trakcję (E_kolo/η_tr)
-        E_aux:            Energia potrzeb własnych (P_aux · T)
-        E_ham_el_kolo:    Energia hamowania elektrycznego (mierzona na kole)
-        E_rec_pant:       Energia rzeczywiście zwrócona do sieci
-        E_ham_mech:       Energia rozproszona w hamulcu mechanicznym
-        E_pant_pobrana:   E_trakcja_pant + E_aux (suma poborów)
-        E_pant_netto:     E_pant_pobrana - E_rec_pant (główna metryka)
-
-    Atrybuty - metryki:
-        E_jednostkowa:    [kWh/(100 km · t)] - standard porównawczy KDP
-        P_pant_max:       Maksymalna chwilowa moc poboru [W]
-        P_pant_avg:       Średnia moc poboru w czasie przejazdu [W]
-        I_pant_max:       Maksymalny prąd pantografu [A]
-    """
+    
 
 
     P_kolo :np .ndarray 
@@ -123,7 +73,7 @@ class EnergyResults :
     I_pant_max :float 
 
     def summary (self ,p :Parameters )->str :
-        """Czytelne podsumowanie bilansu energii."""
+        
         return (
         f"=== Bilans energetyczny ===\n"
         f"  System zasilania       : {p .power_system } (η_grid = {p .eta_grid :.2f})\n"
@@ -153,16 +103,7 @@ class EnergyResults :
 
 
 def compute_energy (sim :SimulationProfile ,p :Parameters )->EnergyResults :
-    """
-    Wylicza bilans energetyczny z gotowego profilu symulacji.
-
-    Args:
-        sim: Profil dynamiczny z run_simulation().
-        p: Parametry symulacji.
-
-    Returns:
-        EnergyResults zawierający tablice i całkowite energie.
-    """
+    
     N =len (sim .x )
     v =sim .v 
     phase =sim .phase 

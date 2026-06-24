@@ -1,16 +1,4 @@
-"""
-sobol_convergence.py — Test zbieżności indeksów Sobola.
 
-Realizuje procedurę z rozdz. 4.6: oblicza indeksy S_i i S_Ti dla rosnącej
-liczby próbek N i obserwuje, przy jakim N wartości się stabilizują.
-Stabilizacja uzasadnia wybór finalnego N do analizy w rozdz. 7.
-
-Generuje:
-  - CSV z indeksami dla każdego N (sobol_convergence_{system}.csv)
-  - wykres S_i(N) i S_Ti(N) dla każdego parametru (sobol_convergence.png)
-
-Autor: Jakub Król, PW WE, 2026
-"""
 
 from __future__ import annotations 
 
@@ -59,12 +47,7 @@ def run_convergence (
 systems :tuple [str ,...]=("AC","DC"),
 N_values :tuple [int ,...]=(128 ,256 ,512 ,1024 ,2048 ,4096 ),
 )->pd .DataFrame :
-    """
-    Liczy indeksy Sobola dla rosnących N i obu systemów.
-
-    Returns:
-        DataFrame: system, N, n_runs, parameter, S1, S1_conf, ST, ST_conf.
-    """
+    
     rows =[]
     for system in systems :
         print (f"\n{'='*70 }")
@@ -92,10 +75,7 @@ N_values :tuple [int ,...]=(128 ,256 ,512 ,1024 ,2048 ,4096 ),
 
 
 def plot_convergence (df :pd .DataFrame ,save_dir =OUTPUT_DIR )->list :
-    """
-    Rysuje wykresy zbieżności S_i(N) i S_Ti(N) dla każdego systemu.
-    Dwa panele (S1, ST) na system.
-    """
+    
     save_dir .mkdir (parents =True ,exist_ok =True )
     paths =[]
 
